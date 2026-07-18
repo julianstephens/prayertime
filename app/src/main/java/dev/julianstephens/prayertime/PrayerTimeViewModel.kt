@@ -122,16 +122,20 @@ class PrayerTimeViewModel(
     }
 
     fun updateSoundSource(source: NotificationSoundSource) {
-        saveSoundSettings(_soundSettings.value.copy(source = source))
+        saveSoundSettings(
+            preferences.loadNotificationSoundSettings().copy(source = source),
+        )
     }
 
     fun updateFeedbackMode(mode: NotificationFeedbackMode) {
-        saveSoundSettings(_soundSettings.value.copy(feedbackMode = mode))
+        saveSoundSettings(
+            preferences.loadNotificationSoundSettings().copy(feedbackMode = mode),
+        )
     }
 
     fun updateCustomSound(uri: String, displayName: String?) {
         saveSoundSettings(
-            _soundSettings.value.copy(
+            preferences.loadNotificationSoundSettings().copy(
                 source = NotificationSoundSource.CUSTOM,
                 customSoundUri = uri,
                 customSoundName = displayName ?: "Custom sound",
