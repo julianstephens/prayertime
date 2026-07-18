@@ -14,78 +14,99 @@ import androidx.core.content.ContextCompat
 import dev.julianstephens.prayertime.MainActivity
 import dev.julianstephens.prayertime.R
 import dev.julianstephens.prayertime.data.PrayerPreferences
+import dev.julianstephens.prayertime.data.PrayerResolution
 import dev.julianstephens.prayertime.model.PrayerHourId
+import java.time.LocalDate
 
 class PrayerAlarmReceiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context, intent: Intent) {
-        val idValue = intent.getStringExtra(EXTRA_PRAYER_ID) ?: return
-        val prayerId = runCatching {
-            PrayerHourId.valueOf(idValue)
-        }.getOrNull() ?: return
-
-        val hour = PrayerPreferences(context)
-            .loadHours()
-            .firstOrNull { it.id == prayerId }
+        val prayerId = intent.getStringExtra(EXTRA_PRAYER_ID)
+            ?.let { runCatching { PrayerHourId.valueOf(it) }.getOrNull() }
             ?: return
+        val occurrenceDate = intent.getStringExtra(EXTRA_OCCURRENCE_DATE)
+            ?.let { runCatching { LocalDate.parse(it) }.getOrNull() }
+            ?: return
+        val kind = intent.getStringExtra(EXTRA_ALARM_KIND)
+            ?.let { runCatching { AlarmKind.valueOf(it) }.getOrNull() }
+            ?: AlarmKind.TARGET
+
+        val preferences = PrayerPreferences(context)
+        val hour = preferences.loadHours().firstOrNull { it.id == prayerId } ?: return
+        if (!hour.enabled || preferences.loadResolution(prayerId, occurrenceDate) != PrayerResolution.PENDING) {
+            return
+        }
 
         createNotificationChannel(context)
-
-        val notificationPermissionGranted =
-            ContextCompat.checkSelfPermission(
-                context,
-                Manifest.permission.POST_NOTIFICATIONS,
-            ) == PackageManager.PERMISSION_GRANTED
-
-        if (
-            android.os.Build.VERSION.SDK_INT < 33 ||
-            notificationPermissionGranted
-        ) {
+        if (canPostNotifications(context)) {
             NotificationManagerCompat.from(context).notify(
-                prayerId.ordinal,
-                buildNotification(context, prayerId, hour.name),
+                notificationId(prayerId, occurrenceDate),
+                buildNotification(context, prayerId, occurrenceDate, hour.name, kind),
             )
         }
 
-        PrayerAlarmScheduler(context).scheduleNext(hour)
+        if (kind == AlarmKind.TARGET) {
+            PrayerAlarmScheduler(context).scheduleTomorrow(hour, occurrenceDate)
+        }
     }
 
     private fun buildNotification(
         context: Context,
         prayerId: PrayerHourId,
+        date: LocalDate,
         prayerName: String,
+        kind: AlarmKind,
     ): android.app.Notification {
         val openIntent = Intent(context, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or
-                    Intent.FLAG_ACTIVITY_CLEAR_TOP
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
             putExtra(EXTRA_PRAYER_ID, prayerId.name)
+            putExtra(EXTRA_OCCURRENCE_DATE, date.toString())
         }
-
         val openPendingIntent = PendingIntent.getActivity(
             context,
-            prayerId.ordinal,
+            PrayerAlarmScheduler.requestCode(prayerId, date, "open"),
             openIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or
-                    PendingIntent.FLAG_IMMUTABLE,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
+
+        val text = if (kind == AlarmKind.DELAYED) {
+            "$prayerName remains due."
+        } else {
+            "It is time to stop and pray."
+        }
 
         return NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_prayer)
             .setContentTitle("$prayerName prayer")
-            .setContentText("It is time to stop and pray.")
-            .setStyle(
-                NotificationCompat.BigTextStyle()
-                    .bigText(
-                        "It is time to stop and pray. " +
-                                "Holy God, Holy Mighty, Holy Immortal, " +
-                                "have mercy on us.",
-                    ),
-            )
+            .setContentText(text)
             .setContentIntent(openPendingIntent)
             .setAutoCancel(true)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_REMINDER)
+            .addAction(
+                R.drawable.ic_stat_prayer,
+                "Prayed",
+                PrayerActionReceiver.pendingIntent(context, prayerId, date, PrayerActionReceiver.ACTION_COMPLETE),
+            )
+            .addAction(
+                R.drawable.ic_stat_prayer,
+                "Delay 10 min",
+                PrayerActionReceiver.pendingIntent(context, prayerId, date, PrayerActionReceiver.ACTION_DELAY),
+            )
+            .addAction(
+                R.drawable.ic_stat_prayer,
+                "Cannot pray",
+                PrayerActionReceiver.pendingIntent(context, prayerId, date, PrayerActionReceiver.ACTION_CANNOT_PRAY),
+            )
             .build()
     }
+
+    private fun canPostNotifications(context: Context): Boolean =
+        android.os.Build.VERSION.SDK_INT < 33 ||
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.POST_NOTIFICATIONS,
+            ) == PackageManager.PERMISSION_GRANTED
 
     private fun createNotificationChannel(context: Context) {
         val channel = NotificationChannel(
@@ -95,13 +116,17 @@ class PrayerAlarmReceiver : BroadcastReceiver() {
         ).apply {
             description = "Notifications for scheduled prayer hours"
         }
-
         context.getSystemService(NotificationManager::class.java)
             .createNotificationChannel(channel)
     }
 
     companion object {
         const val EXTRA_PRAYER_ID = "prayer_id"
+        const val EXTRA_OCCURRENCE_DATE = "occurrence_date"
+        const val EXTRA_ALARM_KIND = "alarm_kind"
         private const val CHANNEL_ID = "prayer_hours"
+
+        fun notificationId(prayerId: PrayerHourId, date: LocalDate): Int =
+            "$prayerId:$date".hashCode()
     }
 }
