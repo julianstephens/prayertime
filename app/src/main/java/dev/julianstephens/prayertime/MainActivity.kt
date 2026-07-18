@@ -506,7 +506,12 @@ private fun PrayerHourRow(
                     StatusMarker(status)
                     Spacer(Modifier.width(14.dp))
                     Column(modifier = Modifier.weight(1f)) {
-                        Text(hour.name, style = MaterialTheme.typography.titleMedium)
+                        Text(hour.name, style = MaterialTheme.typography.titleMedium,
+                            color = if (status == PrayerUiStatus.DUE) {
+                                MaterialTheme.colorScheme.tertiary
+                            } else {
+                                MaterialTheme.colorScheme.onSurface
+                            })
                         Text(
                             statusText(status),
                             style = MaterialTheme.typography.bodySmall,
