@@ -1,6 +1,12 @@
 package dev.julianstephens.prayertime.ui.settings
 
+import android.app.AlarmManager
 import android.app.TimePickerDialog
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.os.Build
+import android.provider.Settings
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -33,6 +39,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -42,6 +49,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import dev.julianstephens.prayertime.PrayerTimeViewModel
 import dev.julianstephens.prayertime.data.NotificationFeedbackMode
 import dev.julianstephens.prayertime.data.NotificationSoundSettings
@@ -50,6 +60,9 @@ import dev.julianstephens.prayertime.data.NotificationVolumeMode
 import dev.julianstephens.prayertime.data.PrayerPreferences
 import dev.julianstephens.prayertime.model.PrayerHour
 import dev.julianstephens.prayertime.model.PrayerHourId
+import dev.julianstephens.prayertime.notifications.AlarmKind
+import dev.julianstephens.prayertime.notifications.PrayerAlarmReceiver
+import java.time.LocalDate
 import java.time.LocalTime
 import java.time.format.DateTimeFormatter
 import kotlin.math.roundToInt
@@ -202,14 +215,27 @@ fun SettingsScreen(
     onSelectCustomSound: () -> Unit,
 ) {
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     var currentSettings by remember(soundSettings) {
         mutableStateOf(soundSettings)
+    }
+    var exactAlarmsAllowed by remember {
+        mutableStateOf(canScheduleExactAlarms(context))
+    }
+
+    DisposableEffect(lifecycleOwner, context) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                exactAlarmsAllowed = canScheduleExactAlarms(context)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
     fun saveAdditionalSettings(updated: NotificationSoundSettings) {
         PrayerPreferences(context).saveNotificationSoundSettings(updated)
         currentSettings = updated
-        // Refresh the ViewModel while preserving fields written directly here.
         onSoundSourceChanged(updated.source)
     }
 
@@ -251,6 +277,22 @@ fun SettingsScreen(
                     modifier = Modifier.fillMaxWidth(),
                     contentPadding = PaddingValues(vertical = 14.dp),
                 ) { Text("Add prayer time") }
+            }
+
+            item {
+                SettingsSectionHeader(
+                    title = "Notification readiness",
+                    body = "Confirm that Android can deliver prayer reminders as expected.",
+                )
+            }
+
+            item {
+                NotificationReadinessCard(
+                    exactAlarmsAllowed = exactAlarmsAllowed,
+                    hasEnabledPrayer = hours.any { it.enabled },
+                    onOpenExactAlarmSettings = { openExactAlarmSettings(context) },
+                    onTestNotification = { postTestNotification(context, hours) },
+                )
             }
 
             item {
@@ -303,6 +345,68 @@ fun SettingsScreen(
                     )
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun NotificationReadinessCard(
+    exactAlarmsAllowed: Boolean,
+    hasEnabledPrayer: Boolean,
+    onOpenExactAlarmSettings: () -> Unit,
+    onTestNotification: () -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainer,
+        ),
+    ) {
+        Column(
+            modifier = Modifier.padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text("Precise alarms", style = MaterialTheme.typography.titleMedium)
+            Text(
+                if (exactAlarmsAllowed) {
+                    "Allowed. Prayer reminders can be scheduled at their exact times."
+                } else {
+                    "Not allowed. Android may delay prayer reminders."
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = if (exactAlarmsAllowed) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    MaterialTheme.colorScheme.error
+                },
+            )
+
+            if (!exactAlarmsAllowed && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                Button(
+                    onClick = onOpenExactAlarmSettings,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("Allow precise alarms")
+                }
+            }
+
+            OutlinedButton(
+                onClick = onTestNotification,
+                enabled = hasEnabledPrayer,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Send test notification")
+            }
+
+            Text(
+                if (hasEnabledPrayer) {
+                    "The test uses the current sound, vibration, volume, and override settings."
+                } else {
+                    "Enable at least one prayer time to send a test notification."
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }
@@ -597,4 +701,50 @@ private fun WindowPresetRow(
             )
         }
     }
+}
+
+private fun canScheduleExactAlarms(context: Context): Boolean {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return true
+    return context.getSystemService(AlarmManager::class.java)
+        .canScheduleExactAlarms()
+}
+
+private fun openExactAlarmSettings(context: Context) {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
+
+    val exactAlarmIntent = Intent(
+        Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM,
+        Uri.parse("package:${context.packageName}"),
+    ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+
+    val fallbackIntent = Intent(
+        Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+        Uri.parse("package:${context.packageName}"),
+    ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+
+    runCatching { context.startActivity(exactAlarmIntent) }
+        .onFailure { context.startActivity(fallbackIntent) }
+}
+
+private fun postTestNotification(
+    context: Context,
+    hours: List<PrayerHour>,
+) {
+    val hour = hours.firstOrNull { it.enabled } ?: return
+    val testDate = LocalDate.now().plusDays(1)
+
+    context.sendBroadcast(
+        Intent(context, PrayerAlarmReceiver::class.java).apply {
+            action = "${context.packageName}.notification.TEST"
+            putExtra(PrayerAlarmReceiver.EXTRA_PRAYER_ID, hour.id.value)
+            putExtra(
+                PrayerAlarmReceiver.EXTRA_OCCURRENCE_DATE,
+                testDate.toString(),
+            )
+            putExtra(
+                PrayerAlarmReceiver.EXTRA_ALARM_KIND,
+                AlarmKind.DELAYED.name,
+            )
+        },
+    )
 }
