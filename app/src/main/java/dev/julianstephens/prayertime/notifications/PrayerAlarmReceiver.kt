@@ -56,14 +56,15 @@ class PrayerAlarmReceiver : BroadcastReceiver() {
         }
 
         val settings = preferences.loadNotificationSoundSettings()
+        val shouldVibrate = hour.soundEnabled
         val shouldPlaySound =
-            hour.soundEnabled &&
+            shouldVibrate &&
                 settings.feedbackMode == NotificationFeedbackMode.SOUND_AND_VIBRATION
         val sound = if (shouldPlaySound) resolveSoundUri(context, settings) else null
         val channelId = createNotificationChannel(
             context = context,
             sound = sound,
-            vibrationOnly = !shouldPlaySound,
+            vibrationEnabled = shouldVibrate,
             settings = settings,
         )
 
@@ -74,7 +75,7 @@ class PrayerAlarmReceiver : BroadcastReceiver() {
                     context = context,
                     channelId = channelId,
                     sound = sound,
-                    vibrationOnly = !shouldPlaySound,
+                    vibrationEnabled = shouldVibrate,
                     prayerId = prayerId,
                     date = occurrenceDate,
                     prayerName = hour.name,
@@ -95,7 +96,7 @@ class PrayerAlarmReceiver : BroadcastReceiver() {
         context: Context,
         channelId: String,
         sound: Uri?,
-        vibrationOnly: Boolean,
+        vibrationEnabled: Boolean,
         prayerId: PrayerHourId,
         date: LocalDate,
         prayerName: String,
@@ -129,12 +130,14 @@ class PrayerAlarmReceiver : BroadcastReceiver() {
             .setCategory(NotificationCompat.CATEGORY_REMINDER)
             .apply {
                 if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
-                    if (vibrationOnly) {
-                        setSound(null)
-                    } else {
-                        setSound(sound)
-                    }
-                    setVibrate(VIBRATION_PATTERN)
+                    setSound(sound)
+                    setVibrate(
+                        if (vibrationEnabled) {
+                            VIBRATION_PATTERN
+                        } else {
+                            null
+                        },
+                    )
                 }
             }
             .addAction(
@@ -180,12 +183,12 @@ class PrayerAlarmReceiver : BroadcastReceiver() {
     private fun createNotificationChannel(
         context: Context,
         sound: Uri?,
-        vibrationOnly: Boolean,
+        vibrationEnabled: Boolean,
         settings: NotificationSoundSettings,
     ): String {
         val channelId = channelId(
             sound = sound,
-            vibrationOnly = vibrationOnly,
+            vibrationEnabled = vibrationEnabled,
             settings = settings,
         )
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return channelId
@@ -195,19 +198,21 @@ class PrayerAlarmReceiver : BroadcastReceiver() {
             .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
             .build()
 
+        val channelName = when {
+            !vibrationEnabled -> "Prayer hours · silent"
+            sound == null -> "Prayer hours · vibration"
+            else -> "Prayer hours · sound"
+        }
+
         val channel = NotificationChannel(
             channelId,
-            if (vibrationOnly) "Prayer hours · vibration" else "Prayer hours · sound",
+            channelName,
             NotificationManager.IMPORTANCE_HIGH,
         ).apply {
             description = "Notifications for scheduled prayer hours"
-            enableVibration(true)
-            vibrationPattern = VIBRATION_PATTERN
-            if (vibrationOnly) {
-                setSound(null, null)
-            } else {
-                setSound(sound, audioAttributes)
-            }
+            enableVibration(vibrationEnabled)
+            vibrationPattern = if (vibrationEnabled) VIBRATION_PATTERN else null
+            setSound(sound, if (sound != null) audioAttributes else null)
         }
 
         context.getSystemService(NotificationManager::class.java)
@@ -217,10 +222,11 @@ class PrayerAlarmReceiver : BroadcastReceiver() {
 
     private fun channelId(
         sound: Uri?,
-        vibrationOnly: Boolean,
+        vibrationEnabled: Boolean,
         settings: NotificationSoundSettings,
     ): String {
-        if (vibrationOnly) return "prayer_hours_v3_vibration"
+        if (!vibrationEnabled) return "prayer_hours_v4_silent"
+        if (sound == null) return "prayer_hours_v4_vibration"
 
         val source = when (settings.source) {
             NotificationSoundSource.SYSTEM_ALARM -> "system"
@@ -228,7 +234,7 @@ class PrayerAlarmReceiver : BroadcastReceiver() {
             NotificationSoundSource.CUSTOM ->
                 "custom_${sound.toString().hashCode().absoluteValue}"
         }
-        return "prayer_hours_v3_$source"
+        return "prayer_hours_v4_$source"
     }
 
     private fun resolveSoundUri(
