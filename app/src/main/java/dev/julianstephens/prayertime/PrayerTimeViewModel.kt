@@ -9,6 +9,7 @@ import dev.julianstephens.prayertime.notifications.PrayerAlarmScheduler
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import java.time.LocalDate
 import java.time.LocalTime
 
 class PrayerTimeViewModel(
@@ -28,30 +29,25 @@ class PrayerTimeViewModel(
     fun updateTime(id: PrayerHourId, time: LocalTime) {
         preferences.saveTime(id, time)
         refresh()
-
-        currentHour(id)?.let(scheduler::scheduleNext)
+        scheduler.reconcileAll()
     }
 
     fun updateEnabled(id: PrayerHourId, enabled: Boolean) {
         preferences.saveEnabled(id, enabled)
         refresh()
-
-        if (enabled) {
-            currentHour(id)?.let(scheduler::scheduleNext)
-        } else {
-            scheduler.cancel(id)
-        }
+        scheduler.reconcileAll()
     }
 
     fun markCompleted(id: PrayerHourId, completed: Boolean) {
         preferences.saveCompleted(id, completed)
+        if (completed) {
+            scheduler.cancelDelayed(id, LocalDate.now())
+            scheduler.cancelWindowClose(id, LocalDate.now())
+        }
         refresh()
     }
 
     fun refresh() {
         _hours.value = preferences.loadHours()
     }
-
-    private fun currentHour(id: PrayerHourId): PrayerHour? =
-        _hours.value.firstOrNull { it.id == id }
 }
