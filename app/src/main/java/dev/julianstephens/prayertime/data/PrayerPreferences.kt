@@ -96,6 +96,17 @@ class PrayerPreferences(
                 ?: NotificationFeedbackMode.SOUND_AND_VIBRATION,
             customSoundUri = preferences.getString(CUSTOM_SOUND_URI_KEY, null),
             customSoundName = preferences.getString(CUSTOM_SOUND_NAME_KEY, null),
+            overridePhoneSoundMode = preferences.getBoolean(
+                OVERRIDE_PHONE_SOUND_MODE_KEY,
+                false,
+            ),
+            volumeMode = preferences.getString(VOLUME_MODE_KEY, null)
+                ?.let { runCatching { NotificationVolumeMode.valueOf(it) }.getOrNull() }
+                ?: NotificationVolumeMode.PHONE_ALARM,
+            customVolumePercent = preferences.getInt(
+                CUSTOM_VOLUME_PERCENT_KEY,
+                DEFAULT_CUSTOM_VOLUME_PERCENT,
+            ).coerceIn(0, 100),
         )
 
     fun saveNotificationSoundSettings(settings: NotificationSoundSettings) {
@@ -104,6 +115,15 @@ class PrayerPreferences(
             .putString(FEEDBACK_MODE_KEY, settings.feedbackMode.name)
             .putString(CUSTOM_SOUND_URI_KEY, settings.customSoundUri)
             .putString(CUSTOM_SOUND_NAME_KEY, settings.customSoundName)
+            .putBoolean(
+                OVERRIDE_PHONE_SOUND_MODE_KEY,
+                settings.overridePhoneSoundMode,
+            )
+            .putString(VOLUME_MODE_KEY, settings.volumeMode.name)
+            .putInt(
+                CUSTOM_VOLUME_PERCENT_KEY,
+                settings.customVolumePercent.coerceIn(0, 100),
+            )
             .apply()
     }
 
@@ -285,6 +305,10 @@ class PrayerPreferences(
         const val FEEDBACK_MODE_KEY = "notification_feedback_mode"
         const val CUSTOM_SOUND_URI_KEY = "custom_sound_uri"
         const val CUSTOM_SOUND_NAME_KEY = "custom_sound_name"
+        const val OVERRIDE_PHONE_SOUND_MODE_KEY = "override_phone_sound_mode"
+        const val VOLUME_MODE_KEY = "notification_volume_mode"
+        const val CUSTOM_VOLUME_PERCENT_KEY = "custom_volume_percent"
+        const val DEFAULT_CUSTOM_VOLUME_PERCENT = 70
         const val DEFAULT_WINDOW_MINUTES = 60
     }
 }
