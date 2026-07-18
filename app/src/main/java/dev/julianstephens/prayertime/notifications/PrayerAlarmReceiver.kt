@@ -156,7 +156,7 @@ class PrayerAlarmReceiver : BroadcastReceiver() {
             .setCategory(NotificationCompat.CATEGORY_REMINDER)
             .apply {
                 if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
-                    setSound(sound, alarmAudioAttributes())
+                    setSound(sound, AudioManager.STREAM_ALARM)
                     setVibrate(
                         if (vibrationEnabled) VIBRATION_PATTERN else null,
                     )
