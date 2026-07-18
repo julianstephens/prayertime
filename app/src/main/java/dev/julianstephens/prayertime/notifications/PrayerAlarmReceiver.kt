@@ -10,6 +10,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.AudioAttributes
+import android.media.MediaPlayer
 import android.media.RingtoneManager
 import android.net.Uri
 import android.os.Build
@@ -21,10 +22,12 @@ import dev.julianstephens.prayertime.R
 import dev.julianstephens.prayertime.data.NotificationFeedbackMode
 import dev.julianstephens.prayertime.data.NotificationSoundSettings
 import dev.julianstephens.prayertime.data.NotificationSoundSource
+import dev.julianstephens.prayertime.data.NotificationVolumeMode
 import dev.julianstephens.prayertime.data.PrayerPreferences
 import dev.julianstephens.prayertime.data.PrayerResolution
 import dev.julianstephens.prayertime.model.PrayerHourId
 import java.time.LocalDate
+import java.util.Collections
 import kotlin.math.absoluteValue
 
 class PrayerAlarmReceiver : BroadcastReceiver() {
@@ -56,16 +59,26 @@ class PrayerAlarmReceiver : BroadcastReceiver() {
         }
 
         val settings = preferences.loadNotificationSoundSettings()
-        val shouldVibrate = hour.soundEnabled
-        val shouldPlaySound =
-            shouldVibrate &&
+        val vibrationEnabled = hour.soundEnabled
+        val soundRequested =
+            hour.soundEnabled &&
                 settings.feedbackMode == NotificationFeedbackMode.SOUND_AND_VIBRATION
-        val sound = if (shouldPlaySound) resolveSoundUri(context, settings) else null
+        val resolvedSound = if (soundRequested) {
+            resolveSoundUri(context, settings)
+        } else {
+            null
+        }
+        val useCustomVolume =
+            soundRequested &&
+                settings.volumeMode == NotificationVolumeMode.CUSTOM
+        val channelSound = if (useCustomVolume) null else resolvedSound
+
         val channelId = createNotificationChannel(
             context = context,
-            sound = sound,
-            vibrationEnabled = shouldVibrate,
+            sound = channelSound,
+            vibrationEnabled = vibrationEnabled,
             settings = settings,
+            manualPlayback = useCustomVolume,
         )
 
         if (canPostNotifications(context)) {
@@ -74,14 +87,22 @@ class PrayerAlarmReceiver : BroadcastReceiver() {
                 buildNotification(
                     context = context,
                     channelId = channelId,
-                    sound = sound,
-                    vibrationEnabled = shouldVibrate,
+                    sound = channelSound,
+                    vibrationEnabled = vibrationEnabled,
                     prayerId = prayerId,
                     date = occurrenceDate,
                     prayerName = hour.name,
                     kind = kind,
                 ),
             )
+
+            if (useCustomVolume && resolvedSound != null) {
+                playAtCustomVolume(
+                    context = context,
+                    sound = resolvedSound,
+                    settings = settings,
+                )
+            }
         }
 
         if (kind == AlarmKind.TARGET) {
@@ -185,22 +206,24 @@ class PrayerAlarmReceiver : BroadcastReceiver() {
         sound: Uri?,
         vibrationEnabled: Boolean,
         settings: NotificationSoundSettings,
+        manualPlayback: Boolean,
     ): String {
         val channelId = channelId(
             sound = sound,
             vibrationEnabled = vibrationEnabled,
             settings = settings,
+            manualPlayback = manualPlayback,
         )
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return channelId
 
-        val audioAttributes = AudioAttributes.Builder()
-            .setUsage(AudioAttributes.USAGE_ALARM)
-            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-            .build()
-
+        val audioAttributes = audioAttributes(
+            overridePhoneSoundMode = settings.overridePhoneSoundMode,
+        )
         val channelName = when {
             !vibrationEnabled -> "Prayer hours · silent"
+            manualPlayback -> "Prayer hours · custom volume"
             sound == null -> "Prayer hours · vibration"
+            settings.overridePhoneSoundMode -> "Prayer hours · interrupting sound"
             else -> "Prayer hours · sound"
         }
 
@@ -224,9 +247,17 @@ class PrayerAlarmReceiver : BroadcastReceiver() {
         sound: Uri?,
         vibrationEnabled: Boolean,
         settings: NotificationSoundSettings,
+        manualPlayback: Boolean,
     ): String {
-        if (!vibrationEnabled) return "prayer_hours_v4_silent"
-        if (sound == null) return "prayer_hours_v4_vibration"
+        if (!vibrationEnabled) return "prayer_hours_v5_silent"
+        if (sound == null && !manualPlayback) return "prayer_hours_v5_vibration"
+
+        val behavior = if (settings.overridePhoneSoundMode) {
+            "override"
+        } else {
+            "respect"
+        }
+        if (manualPlayback) return "prayer_hours_v5_manual_$behavior"
 
         val source = when (settings.source) {
             NotificationSoundSource.SYSTEM_ALARM -> "system"
@@ -234,8 +265,59 @@ class PrayerAlarmReceiver : BroadcastReceiver() {
             NotificationSoundSource.CUSTOM ->
                 "custom_${sound.toString().hashCode().absoluteValue}"
         }
-        return "prayer_hours_v4_$source"
+        return "prayer_hours_v5_${behavior}_$source"
     }
+
+    private fun playAtCustomVolume(
+        context: Context,
+        sound: Uri,
+        settings: NotificationSoundSettings,
+    ) {
+        val player = MediaPlayer()
+        val volume = settings.customVolumePercent
+            .coerceIn(0, 100) / 100f
+
+        fun releasePlayer() {
+            activePlayers.remove(player)
+            runCatching { player.release() }
+        }
+
+        runCatching {
+            player.setAudioAttributes(
+                audioAttributes(settings.overridePhoneSoundMode),
+            )
+            player.setDataSource(context, sound)
+            player.setVolume(volume, volume)
+            player.setOnPreparedListener { prepared ->
+                prepared.start()
+            }
+            player.setOnCompletionListener {
+                releasePlayer()
+            }
+            player.setOnErrorListener { _, _, _ ->
+                releasePlayer()
+                true
+            }
+            activePlayers.add(player)
+            player.prepareAsync()
+        }.onFailure {
+            releasePlayer()
+        }
+    }
+
+    private fun audioAttributes(
+        overridePhoneSoundMode: Boolean,
+    ): AudioAttributes =
+        AudioAttributes.Builder()
+            .setUsage(
+                if (overridePhoneSoundMode) {
+                    AudioAttributes.USAGE_ALARM
+                } else {
+                    AudioAttributes.USAGE_NOTIFICATION_EVENT
+                },
+            )
+            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+            .build()
 
     private fun resolveSoundUri(
         context: Context,
@@ -267,6 +349,9 @@ class PrayerAlarmReceiver : BroadcastReceiver() {
         const val EXTRA_ALARM_KIND = "alarm_kind"
 
         private val VIBRATION_PATTERN = longArrayOf(0L, 400L, 200L, 400L)
+        private val activePlayers = Collections.synchronizedSet(
+            mutableSetOf<MediaPlayer>(),
+        )
 
         fun notificationId(
             prayerId: PrayerHourId,
