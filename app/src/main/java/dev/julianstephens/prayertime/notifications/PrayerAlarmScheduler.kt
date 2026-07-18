@@ -4,6 +4,7 @@ import android.app.AlarmManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import dev.julianstephens.prayertime.data.PrayerPreferences
 import dev.julianstephens.prayertime.data.PrayerResolution
 import dev.julianstephens.prayertime.model.PrayerHour
@@ -181,10 +182,9 @@ class PrayerAlarmScheduler(
             return false
         }
 
-        alarmManager.setAndAllowWhileIdle(
-            AlarmManager.RTC_WAKEUP,
-            triggerAt.toInstant().toEpochMilli(),
-            alarmPendingIntent(
+        scheduleAlarm(
+            triggerAtMillis = triggerAt.toInstant().toEpochMilli(),
+            pendingIntent = alarmPendingIntent(
                 prayerId = prayerId,
                 date = date,
                 kind = AlarmKind.DELAYED,
@@ -242,17 +242,20 @@ class PrayerAlarmScheduler(
         }
     }
 
+    fun canScheduleExactAlarms(): Boolean =
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
+                alarmManager.canScheduleExactAlarms()
+
     private fun scheduleImmediateTarget(
         hour: PrayerHour,
         date: LocalDate,
         now: ZonedDateTime,
     ) {
-        alarmManager.setAndAllowWhileIdle(
-            AlarmManager.RTC_WAKEUP,
-            now.plusSeconds(1)
+        scheduleAlarm(
+            triggerAtMillis = now.plusSeconds(1)
                 .toInstant()
                 .toEpochMilli(),
-            alarmPendingIntent(
+            pendingIntent = alarmPendingIntent(
                 prayerId = hour.id,
                 date = date,
                 kind = AlarmKind.TARGET,
@@ -265,10 +268,9 @@ class PrayerAlarmScheduler(
         date: LocalDate,
         target: ZonedDateTime,
     ) {
-        alarmManager.setAndAllowWhileIdle(
-            AlarmManager.RTC_WAKEUP,
-            target.toInstant().toEpochMilli(),
-            alarmPendingIntent(
+        scheduleAlarm(
+            triggerAtMillis = target.toInstant().toEpochMilli(),
+            pendingIntent = alarmPendingIntent(
                 prayerId = hour.id,
                 date = date,
                 kind = AlarmKind.TARGET,
@@ -289,15 +291,33 @@ class PrayerAlarmScheduler(
         date: LocalDate,
         closesAt: ZonedDateTime,
     ) {
-        alarmManager.setAndAllowWhileIdle(
-            AlarmManager.RTC_WAKEUP,
-            closesAt.toInstant().toEpochMilli(),
-            alarmPendingIntent(
+        scheduleAlarm(
+            triggerAtMillis = closesAt.toInstant().toEpochMilli(),
+            pendingIntent = alarmPendingIntent(
                 prayerId = hour.id,
                 date = date,
                 kind = AlarmKind.WINDOW_CLOSE,
             ),
         )
+    }
+
+    private fun scheduleAlarm(
+        triggerAtMillis: Long,
+        pendingIntent: PendingIntent,
+    ) {
+        if (canScheduleExactAlarms()) {
+            alarmManager.setExactAndAllowWhileIdle(
+                AlarmManager.RTC_WAKEUP,
+                triggerAtMillis,
+                pendingIntent,
+            )
+        } else {
+            alarmManager.setAndAllowWhileIdle(
+                AlarmManager.RTC_WAKEUP,
+                triggerAtMillis,
+                pendingIntent,
+            )
+        }
     }
 
     private fun alarmPendingIntent(

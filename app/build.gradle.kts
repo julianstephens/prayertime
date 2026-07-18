@@ -30,8 +30,8 @@ android {
         applicationId = "dev.julianstephens.prayertime"
         minSdk = 24
         targetSdk = 36
-        versionCode = 2
-        versionName = "1.0.0"
+        versionCode = 3
+        versionName = "1.0.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -87,6 +87,9 @@ kotlin {
 dependencies {
     coreLibraryDesugaring(
         "com.android.tools:desugar_jdk_libs:2.1.5"
+    )
+    implementation(
+        libs.androidx.compose.material.icons.extended,
     )
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.activity.compose)
