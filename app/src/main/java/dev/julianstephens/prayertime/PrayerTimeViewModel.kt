@@ -64,7 +64,9 @@ class PrayerTimeViewModel(
         )
 
         refresh()
-        scheduler.reconcileAll()
+        _hours.value
+            .firstOrNull { it.id == id }
+            ?.let(scheduler::reconcileChangedHour)
 
         return id
     }
@@ -83,7 +85,9 @@ class PrayerTimeViewModel(
 
         preferences.updateHour(sanitized)
         refresh()
-        scheduler.reconcileAll()
+        _hours.value
+            .firstOrNull { it.id == sanitized.id }
+            ?.let(scheduler::reconcileChangedHour)
     }
 
     fun deletePrayerHour(

@@ -32,6 +32,60 @@ class PrayerAlarmScheduler(
         }
     }
 
+    fun reconcileChangedHour(
+        hour: PrayerHour,
+    ) {
+        cancelAll(hour.id)
+
+        if (!hour.enabled) {
+            return
+        }
+
+        val zone = ZoneId.systemDefault()
+        val now = ZonedDateTime.now(zone)
+        val today = LocalDate.now(zone)
+
+        val target = today
+            .atTime(hour.targetTime)
+            .atZone(zone)
+
+        val closesAt = target.plusMinutes(
+            hour.windowMinutes.toLong(),
+        )
+
+        when {
+            now.isBefore(target) -> {
+                scheduleOccurrence(
+                    hour = hour,
+                    date = today,
+                    target = target,
+                )
+            }
+
+            now.isBefore(closesAt) &&
+                    preferences.loadResolution(
+                        hour.id,
+                        today,
+                    ) == PrayerResolution.PENDING -> {
+                scheduleImmediateTarget(
+                    hour = hour,
+                    date = today,
+                    now = now,
+                )
+
+                scheduleWindowClose(
+                    hour = hour,
+                    date = today,
+                    closesAt = closesAt,
+                )
+            }
+
+            else -> {
+                scheduleNext(hour)
+            }
+        }
+    }
+
     fun scheduleNext(
         hour: PrayerHour,
     ) {
@@ -186,6 +240,24 @@ class PrayerAlarmScheduler(
                 )
             }
         }
+    }
+
+    private fun scheduleImmediateTarget(
+        hour: PrayerHour,
+        date: LocalDate,
+        now: ZonedDateTime,
+    ) {
+        alarmManager.setAndAllowWhileIdle(
+            AlarmManager.RTC_WAKEUP,
+            now.plusSeconds(1)
+                .toInstant()
+                .toEpochMilli(),
+            alarmPendingIntent(
+                prayerId = hour.id,
+                date = date,
+                kind = AlarmKind.TARGET,
+            ),
+        )
     }
 
     private fun scheduleOccurrence(
