@@ -6,6 +6,18 @@ plugins {
     alias(libs.plugins.kotlin.compose)
 }
 
+val releaseKeystorePath =
+    providers.environmentVariable("PRAYERTIME_KEYSTORE_PATH")
+
+val releaseKeystorePassword =
+    providers.environmentVariable("PRAYERTIME_KEYSTORE_PASSWORD")
+
+val releaseKeyAlias =
+    providers.environmentVariable("PRAYERTIME_KEY_ALIAS")
+
+val releaseKeyPassword =
+    providers.environmentVariable("PRAYERTIME_KEY_PASSWORD")
+
 android {
     namespace = "dev.julianstephens.prayertime"
     compileSdk {
@@ -24,13 +36,36 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    signingConfigs {
+        create("release") {
+            storeFile = releaseKeystorePath
+                .orNull
+                ?.let(::file)
+
+            storePassword =
+                releaseKeystorePassword.orNull
+
+            keyAlias =
+                releaseKeyAlias.orNull
+
+            keyPassword =
+                releaseKeyPassword.orNull
+        }
+    }
+
     buildTypes {
         release {
+            isDebuggable = false
+
+            signingConfig =
+                signingConfigs.getByName("release")
+
             optimization {
                 enable = false
             }
         }
     }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
