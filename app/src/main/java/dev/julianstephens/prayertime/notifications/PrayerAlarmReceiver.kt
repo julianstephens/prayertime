@@ -17,9 +17,17 @@ import dev.julianstephens.prayertime.data.PrayerPreferences
 import dev.julianstephens.prayertime.data.PrayerResolution
 import dev.julianstephens.prayertime.model.PrayerHourId
 import java.time.LocalDate
+import android.content.ContentResolver
+import android.media.AudioAttributes
+import android.net.Uri
+import android.os.Build
+import androidx.annotation.RequiresApi
+import androidx.annotation.RequiresPermission
 
 class PrayerAlarmReceiver : BroadcastReceiver() {
 
+    @RequiresPermission(Manifest.permission.POST_NOTIFICATIONS)
+    @RequiresApi(Build.VERSION_CODES.O)
     override fun onReceive(context: Context, intent: Intent) {
         val prayerId = intent.getStringExtra(EXTRA_PRAYER_ID)
             ?.let { runCatching { PrayerHourId.valueOf(it) }.getOrNull() }
@@ -108,23 +116,44 @@ class PrayerAlarmReceiver : BroadcastReceiver() {
                 Manifest.permission.POST_NOTIFICATIONS,
             ) == PackageManager.PERMISSION_GRANTED
 
+    @RequiresApi(Build.VERSION_CODES.O)
     private fun createNotificationChannel(context: Context) {
+        val soundUri = Uri.Builder()
+            .scheme(ContentResolver.SCHEME_ANDROID_RESOURCE)
+            .authority(context.packageName)
+            .appendPath(R.raw.prayer_bell.toString())
+            .build()
+
+        val audioAttributes = AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_NOTIFICATION)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+            .build()
+
         val channel = NotificationChannel(
             CHANNEL_ID,
             "Prayer hours",
             NotificationManager.IMPORTANCE_HIGH,
         ).apply {
             description = "Notifications for scheduled prayer hours"
+
+            setSound(
+                soundUri,
+                audioAttributes,
+            )
+
+            enableVibration(true)
         }
+
         context.getSystemService(NotificationManager::class.java)
             .createNotificationChannel(channel)
     }
+
 
     companion object {
         const val EXTRA_PRAYER_ID = "prayer_id"
         const val EXTRA_OCCURRENCE_DATE = "occurrence_date"
         const val EXTRA_ALARM_KIND = "alarm_kind"
-        private const val CHANNEL_ID = "prayer_hours"
+        private const val CHANNEL_ID = "prayer_hours_v2"
 
         fun notificationId(prayerId: PrayerHourId, date: LocalDate): Int =
             "$prayerId:$date".hashCode()
