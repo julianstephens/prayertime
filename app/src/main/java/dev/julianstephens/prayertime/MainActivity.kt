@@ -2,8 +2,10 @@ package dev.julianstephens.prayertime
 
 import android.Manifest
 import android.app.TimePickerDialog
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.provider.OpenableColumns
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -46,27 +48,29 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import dev.julianstephens.prayertime.data.NotificationFeedbackMode
+import dev.julianstephens.prayertime.data.NotificationSoundSettings
+import dev.julianstephens.prayertime.data.NotificationSoundSource
 import dev.julianstephens.prayertime.model.PrayerHour
 import dev.julianstephens.prayertime.model.PrayerHourId
 import dev.julianstephens.prayertime.notifications.PrayerAlarmReceiver
-import dev.julianstephens.prayertime.ui.theme.PrayerTimeTheme
 import dev.julianstephens.prayertime.ui.settings.EditPrayerDialog
 import dev.julianstephens.prayertime.ui.settings.SettingsScreen
+import dev.julianstephens.prayertime.ui.theme.PrayerTimeTheme
 import java.time.Duration
 import java.time.LocalDate
 import java.time.LocalDateTime
@@ -85,25 +89,42 @@ class MainActivity : ComponentActivity() {
             viewModel.refresh()
         }
 
+    private val customSoundLauncher =
+        registerForActivityResult(
+            ActivityResultContracts.OpenDocument(),
+        ) { uri ->
+            uri ?: return@registerForActivityResult
+
+            runCatching {
+                contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                )
+            }
+
+            viewModel.updateCustomSound(
+                uri = uri.toString(),
+                displayName = customSoundDisplayName(uri),
+            )
+        }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-
         requestNotificationPermissionWhenNeeded()
 
         val openedPrayerId = intent
             ?.getStringExtra(PrayerAlarmReceiver.EXTRA_PRAYER_ID)
-            ?.let { value ->
-                runCatching {
-                    PrayerHourId(value)
-                }.getOrNull()
-            }
+            ?.let(::PrayerHourId)
 
         setContent {
             PrayerTimeTheme {
                 PrayerTimeApp(
                     viewModel = viewModel,
                     initiallyOpenedPrayerId = openedPrayerId,
+                    onSelectCustomSound = {
+                        customSoundLauncher.launch(arrayOf("audio/*"))
+                    },
                 )
             }
         }
@@ -114,10 +135,21 @@ class MainActivity : ComponentActivity() {
         viewModel.refresh()
     }
 
-    private fun requestNotificationPermissionWhenNeeded() {
-        if (android.os.Build.VERSION.SDK_INT < 33) {
-            return
+    private fun customSoundDisplayName(uri: android.net.Uri): String? =
+        contentResolver.query(
+            uri,
+            arrayOf(OpenableColumns.DISPLAY_NAME),
+            null,
+            null,
+            null,
+        )?.use { cursor ->
+            if (!cursor.moveToFirst()) return@use null
+            val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+            if (index >= 0) cursor.getString(index) else null
         }
+
+    private fun requestNotificationPermissionWhenNeeded() {
+        if (android.os.Build.VERSION.SDK_INT < 33) return
 
         val granted = ContextCompat.checkSelfPermission(
             this,
@@ -136,17 +168,13 @@ class MainActivity : ComponentActivity() {
 private fun PrayerTimeApp(
     viewModel: PrayerTimeViewModel,
     initiallyOpenedPrayerId: PrayerHourId?,
+    onSelectCustomSound: () -> Unit,
 ) {
     val hours by viewModel.hours.collectAsStateWithLifecycle()
+    val soundSettings by viewModel.soundSettings.collectAsStateWithLifecycle()
 
-    var showingSettings by rememberSaveable {
-        mutableStateOf(false)
-    }
-
-    var editingId by remember {
-        mutableStateOf<PrayerHourId?>(null)
-    }
-
+    var showingSettings by rememberSaveable { mutableStateOf(false) }
+    var editingId by remember { mutableStateOf<PrayerHourId?>(null) }
     val editingHour = editingId?.let { id ->
         hours.firstOrNull { it.id == id }
     }
@@ -154,25 +182,23 @@ private fun PrayerTimeApp(
     if (showingSettings) {
         SettingsScreen(
             hours = hours,
-            onBack = {
-                showingSettings = false
-            },
-            onAdd = {
-                editingId = viewModel.addPrayerHour()
-            },
-            onEdit = { id ->
-                editingId = id
-            },
+            soundSettings = soundSettings,
+            onBack = { showingSettings = false },
+            onAdd = { editingId = viewModel.addPrayerHour() },
+            onEdit = { editingId = it },
+            onSoundSourceChanged = viewModel::updateSoundSource,
+            onFeedbackModeChanged = viewModel::updateFeedbackMode,
+            onSelectCustomSound = onSelectCustomSound,
         )
     } else {
         TodayContent(
             hours = hours,
+            soundSettings = soundSettings,
             initiallyOpenedPrayerId = initiallyOpenedPrayerId,
-            onOpenSettings = {
-                showingSettings = true
-            },
+            onOpenSettings = { showingSettings = true },
             onTimeChanged = viewModel::updateTime,
             onEnabledChanged = viewModel::updateEnabled,
+            onSoundEnabledChanged = viewModel::updateSoundEnabled,
             onCompletedChanged = viewModel::markCompleted,
         )
     }
@@ -180,19 +206,14 @@ private fun PrayerTimeApp(
     if (editingHour != null) {
         EditPrayerDialog(
             hour = editingHour,
-            canDelete = hours.size >
-                    PrayerTimeViewModel.MIN_PRAYER_HOURS,
-            onDismiss = {
-                editingId = null
-            },
-            onSave = { updatedHour ->
-                viewModel.updateHour(updatedHour)
+            canDelete = hours.size > PrayerTimeViewModel.MIN_PRAYER_HOURS,
+            onDismiss = { editingId = null },
+            onSave = { updated ->
+                viewModel.updateHour(updated)
                 editingId = null
             },
             onDelete = {
-                viewModel.deletePrayerHour(
-                    editingHour.id,
-                )
+                viewModel.deletePrayerHour(editingHour.id)
                 editingId = null
             },
         )
@@ -202,10 +223,12 @@ private fun PrayerTimeApp(
 @Composable
 private fun TodayContent(
     hours: List<PrayerHour>,
+    soundSettings: NotificationSoundSettings,
     initiallyOpenedPrayerId: PrayerHourId?,
     onOpenSettings: () -> Unit,
     onTimeChanged: (PrayerHourId, LocalTime) -> Unit,
     onEnabledChanged: (PrayerHourId, Boolean) -> Unit,
+    onSoundEnabledChanged: (PrayerHourId, Boolean) -> Unit,
     onCompletedChanged: (PrayerHourId, Boolean) -> Unit,
 ) {
     val now = LocalDateTime.now()
@@ -221,7 +244,7 @@ private fun TodayContent(
                 .fillMaxSize()
                 .background(
                     Brush.verticalGradient(
-                        colors = listOf(
+                        listOf(
                             MaterialTheme.colorScheme.background,
                             MaterialTheme.colorScheme.surfaceContainerLowest,
                         ),
@@ -240,127 +263,78 @@ private fun TodayContent(
                     top = 24.dp,
                     bottom = 32.dp,
                 ),
-                verticalArrangement =
-                    Arrangement.spacedBy(16.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
-                item {
-                    AppHeader(
-                        onOpenSettings = onOpenSettings,
-                    )
-                }
-
+                item { AppHeader(onOpenSettings) }
                 item {
                     NextPrayerCard(
                         nextPrayer = nextPrayer,
                         now = now,
-                        onMarkCompleted = { prayerId ->
-                            onCompletedChanged(
-                                prayerId,
-                                true,
-                            )
+                        onMarkCompleted = { id ->
+                            onCompletedChanged(id, true)
                         },
                     )
                 }
-
                 item {
                     SectionHeader(
                         title = "Daily hours",
-                        subtitle = "Tap a time to change it",
+                        subtitle = feedbackSummary(soundSettings),
                     )
                 }
-
                 itemsIndexed(
                     items = hours,
-                    key = { _, hour ->
-                        hour.id.value
-                    },
+                    key = { _, hour -> hour.id.value },
                 ) { index, hour ->
                     PrayerHourRow(
                         hour = hour,
                         now = now,
-                        highlighted =
-                            hour.id ==
-                                    initiallyOpenedPrayerId,
-                        isLast =
-                            index == hours.lastIndex,
-                        onTimeChanged = { time ->
-                            onTimeChanged(
-                                hour.id,
-                                time,
-                            )
+                        highlighted = hour.id == initiallyOpenedPrayerId,
+                        isLast = index == hours.lastIndex,
+                        onTimeChanged = { onTimeChanged(hour.id, it) },
+                        onEnabledChanged = { onEnabledChanged(hour.id, it) },
+                        onSoundEnabledChanged = {
+                            onSoundEnabledChanged(hour.id, it)
                         },
-                        onEnabledChanged = { enabled ->
-                            onEnabledChanged(
-                                hour.id,
-                                enabled,
-                            )
-                        },
-                        onCompletedChanged = { completed ->
-                            onCompletedChanged(
-                                hour.id,
-                                completed,
-                            )
+                        onCompletedChanged = {
+                            onCompletedChanged(hour.id, it)
                         },
                     )
                 }
-
-                item {
-                    AppFooter()
-                }
+                item { AppFooter() }
             }
         }
     }
 }
 
-
 @Composable
-private fun AppHeader(
-    onOpenSettings: () -> Unit,
-) {
+private fun AppHeader(onOpenSettings: () -> Unit) {
     Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.Top,
     ) {
         Column(
             modifier = Modifier.weight(1f),
-            verticalArrangement =
-                Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             Text(
-                text = LocalDate.now().format(
-                    DateTimeFormatter
-                        .ofLocalizedDate(
-                            FormatStyle.FULL,
-                        ),
+                LocalDate.now().format(
+                    DateTimeFormatter.ofLocalizedDate(FormatStyle.FULL),
                 ),
-                style =
-                    MaterialTheme.typography.labelLarge,
-                color =
-                    MaterialTheme.colorScheme.primary,
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.primary,
             )
-
             Text(
-                text = "Prayer Time",
-                style =
-                    MaterialTheme.typography.displaySmall,
-                color =
-                    MaterialTheme.colorScheme.onBackground,
+                "Prayer Time",
+                style = MaterialTheme.typography.displaySmall,
+                color = MaterialTheme.colorScheme.onBackground,
             )
-
             Text(
-                text = "A daily rhythm of interruption and attention.",
-                style =
-                    MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme
-                    .onSurfaceVariant,
+                "A daily rhythm of interruption and attention.",
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-
-        TextButton(
-            onClick = onOpenSettings,
-        ) {
-            Text("Settings")
-        }
+        TextButton(onClick = onOpenSettings) { Text("Settings") }
     }
 }
 
@@ -376,44 +350,32 @@ private fun NextPrayerCard(
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.primaryContainer,
         ),
-        elevation = CardDefaults.cardElevation(
-            defaultElevation = 0.dp,
-        ),
     ) {
         Column(
             modifier = Modifier.padding(24.dp),
             verticalArrangement = Arrangement.spacedBy(18.dp),
         ) {
             Text(
-                text = when {
+                when {
                     nextPrayer == null -> "TODAY COMPLETE"
                     nextPrayer.isDue -> "PRAYER WINDOW OPEN"
                     nextPrayer.isTomorrow -> "NEXT PRAYER · TOMORROW"
                     else -> "NEXT PRAYER"
                 },
                 style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onPrimaryContainer
-                    .copy(alpha = 0.72f),
+                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.72f),
             )
 
             if (nextPrayer == null) {
-                Column(
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    Text(
-                        text = "The hours are complete",
-                        style = MaterialTheme.typography.headlineMedium,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer,
-                    )
-
-                    Text(
-                        text = "The next cycle begins tomorrow.",
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer
-                            .copy(alpha = 0.76f),
-                    )
-                }
-
+                Text(
+                    "The hours are complete",
+                    style = MaterialTheme.typography.headlineMedium,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                )
+                Text(
+                    "The next cycle begins tomorrow.",
+                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.76f),
+                )
                 return@Column
             }
 
@@ -421,40 +383,27 @@ private fun NextPrayerCard(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.Bottom,
             ) {
-                Column(
-                    modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
+                Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = nextPrayer.hour.name,
+                        nextPrayer.hour.name,
                         style = MaterialTheme.typography.headlineLarge,
                         color = MaterialTheme.colorScheme.onPrimaryContainer,
                     )
-
                     Text(
-                        text = nextPrayer.hour.targetTime.format(
+                        nextPrayer.hour.targetTime.format(
                             DateTimeFormatter.ofPattern("h:mm a"),
                         ),
                         style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer
-                            .copy(alpha = 0.78f),
+                        color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.78f),
                     )
                 }
-
                 Surface(
                     shape = RoundedCornerShape(50),
-                    color = MaterialTheme.colorScheme.surface
-                        .copy(alpha = 0.72f),
+                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.72f),
                 ) {
                     Text(
-                        text = nextPrayerRelativeText(
-                            nextPrayer = nextPrayer,
-                            now = now,
-                        ),
-                        modifier = Modifier.padding(
-                            horizontal = 14.dp,
-                            vertical = 8.dp,
-                        ),
+                        nextPrayerRelativeText(nextPrayer, now),
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
                         style = MaterialTheme.typography.labelLarge,
                         color = MaterialTheme.colorScheme.primary,
                     )
@@ -462,46 +411,32 @@ private fun NextPrayerCard(
             }
 
             Text(
-                text = if (nextPrayer.isDue) {
+                if (nextPrayer.isDue) {
                     "The ${nextPrayer.hour.windowMinutes}-minute prayer window is open."
                 } else {
                     "You will be notified at the configured time."
                 },
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onPrimaryContainer
-                    .copy(alpha = 0.74f),
+                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.74f),
             )
 
             if (nextPrayer.isDue) {
                 Button(
-                    onClick = {
-                        onMarkCompleted(nextPrayer.hour.id)
-                    },
+                    onClick = { onMarkCompleted(nextPrayer.hour.id) },
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(16.dp),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = MaterialTheme.colorScheme.primary,
                         contentColor = MaterialTheme.colorScheme.onPrimary,
                     ),
-                    contentPadding = PaddingValues(
-                        vertical = 14.dp,
-                    ),
-                ) {
-                    Text(
-                        text = "Mark as prayed",
-                        style = MaterialTheme.typography.labelLarge,
-                    )
-                }
+                    contentPadding = PaddingValues(vertical = 14.dp),
+                ) { Text("Mark as prayed") }
             }
         }
     }
 }
 
 @Composable
-private fun SectionHeader(
-    title: String,
-    subtitle: String,
-) {
+private fun SectionHeader(title: String, subtitle: String) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -509,14 +444,12 @@ private fun SectionHeader(
         verticalAlignment = Alignment.Bottom,
     ) {
         Text(
-            text = title,
+            title,
             modifier = Modifier.weight(1f),
             style = MaterialTheme.typography.titleLarge,
-            color = MaterialTheme.colorScheme.onBackground,
         )
-
         Text(
-            text = subtitle,
+            subtitle,
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -531,86 +464,52 @@ private fun PrayerHourRow(
     isLast: Boolean,
     onTimeChanged: (LocalTime) -> Unit,
     onEnabledChanged: (Boolean) -> Unit,
+    onSoundEnabledChanged: (Boolean) -> Unit,
     onCompletedChanged: (Boolean) -> Unit,
 ) {
     val context = LocalContext.current
     val status = prayerStatus(hour, now)
-    val contentAlpha = if (hour.enabled) 1f else 0.52f
 
-    Column(
-        modifier = Modifier.fillMaxWidth(),
-    ) {
+    Column(modifier = Modifier.fillMaxWidth()) {
         Card(
             modifier = Modifier
                 .fillMaxWidth()
-                .alpha(contentAlpha),
+                .alpha(if (hour.enabled) 1f else 0.52f),
             shape = RoundedCornerShape(22.dp),
             colors = CardDefaults.cardColors(
                 containerColor = when {
-                    highlighted ->
-                        MaterialTheme.colorScheme.secondaryContainer
-
+                    highlighted -> MaterialTheme.colorScheme.secondaryContainer
                     status == PrayerUiStatus.DUE ->
-                        MaterialTheme.colorScheme.primaryContainer
-                            .copy(alpha = 0.55f)
-
-                    else ->
-                        MaterialTheme.colorScheme.surfaceContainer
+                        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
+                    else -> MaterialTheme.colorScheme.surfaceContainer
                 },
             ),
-            border = when {
-                highlighted -> CardDefaults.outlinedCardBorder()
-                else -> null
-            },
-            elevation = CardDefaults.cardElevation(
-                defaultElevation = 0.dp,
-            ),
+            border = if (highlighted) CardDefaults.outlinedCardBorder() else null,
         ) {
             Column(
-                modifier = Modifier.padding(
-                    horizontal = 18.dp,
-                    vertical = 16.dp,
-                ),
+                modifier = Modifier.padding(horizontal = 18.dp, vertical = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    StatusMarker(
-                        status = status,
-                    )
-
+                    StatusMarker(status)
                     Spacer(Modifier.width(14.dp))
-
-                    Column(
-                        modifier = Modifier.weight(1f),
-                        verticalArrangement = Arrangement.spacedBy(3.dp),
-                    ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(hour.name, style = MaterialTheme.typography.titleMedium)
                         Text(
-                            text = hour.name,
-                            style = MaterialTheme.typography.titleMedium,
-                            color = MaterialTheme.colorScheme.onSurface,
-                        )
-
-                        Text(
-                            text = statusText(
-                                hour = hour,
-                                status = status,
-                            ),
+                            statusText(status),
                             style = MaterialTheme.typography.bodySmall,
                             color = statusColor(status),
                         )
                     }
-
                     Switch(
                         checked = hour.enabled,
                         onCheckedChange = onEnabledChanged,
                         colors = SwitchDefaults.colors(
-                            checkedThumbColor =
-                                MaterialTheme.colorScheme.onPrimary,
-                            checkedTrackColor =
-                                MaterialTheme.colorScheme.primary,
+                            checkedThumbColor = MaterialTheme.colorScheme.onPrimary,
+                            checkedTrackColor = MaterialTheme.colorScheme.primary,
                         ),
                     )
                 }
@@ -620,161 +519,131 @@ private fun PrayerHourRow(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Surface(
-                        modifier = Modifier
-                            .clickable(
-                                enabled = hour.enabled,
-                            ) {
-                                TimePickerDialog(
-                                    context,
-                                    { _, selectedHour, selectedMinute ->
-                                        onTimeChanged(
-                                            LocalTime.of(
-                                                selectedHour,
-                                                selectedMinute,
-                                            ),
-                                        )
-                                    },
-                                    hour.targetTime.hour,
-                                    hour.targetTime.minute,
-                                    false,
-                                ).show()
-                            },
+                        modifier = Modifier.clickable(enabled = hour.enabled) {
+                            TimePickerDialog(
+                                context,
+                                { _, selectedHour, selectedMinute ->
+                                    onTimeChanged(
+                                        LocalTime.of(selectedHour, selectedMinute),
+                                    )
+                                },
+                                hour.targetTime.hour,
+                                hour.targetTime.minute,
+                                false,
+                            ).show()
+                        },
                         shape = RoundedCornerShape(14.dp),
                         color = MaterialTheme.colorScheme.surface,
                     ) {
                         Text(
-                            text = hour.targetTime.format(
-                                DateTimeFormatter.ofPattern("h:mm a"),
-                            ),
-                            modifier = Modifier.padding(
-                                horizontal = 16.dp,
-                                vertical = 11.dp,
-                            ),
+                            hour.targetTime.format(DateTimeFormatter.ofPattern("h:mm a")),
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 11.dp),
                             style = MaterialTheme.typography.titleMedium,
-                            color = MaterialTheme.colorScheme.onSurface,
                         )
                     }
-
                     Spacer(Modifier.width(12.dp))
-
                     Text(
-                        text = "${hour.windowMinutes} min window",
+                        "${hour.windowMinutes} min window",
                         modifier = Modifier.weight(1f),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    Checkbox(
+                        checked = hour.completedToday,
+                        onCheckedChange = onCompletedChanged,
+                        enabled = hour.enabled,
+                        colors = CheckboxDefaults.colors(
+                            checkedColor = MaterialTheme.colorScheme.primary,
+                        ),
+                    )
+                    Text(
+                        "Prayed",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
 
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Checkbox(
-                            checked = hour.completedToday,
-                            onCheckedChange = onCompletedChanged,
-                            enabled = hour.enabled,
-                            colors = CheckboxDefaults.colors(
-                                checkedColor =
-                                    MaterialTheme.colorScheme.primary,
-                            ),
-                        )
+                HorizontalDivider(
+                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+                )
 
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "Prayed",
-                            style = MaterialTheme.typography.labelMedium,
+                            if (hour.soundEnabled) "Sound on" else "Muted",
+                            style = MaterialTheme.typography.labelLarge,
+                        )
+                        Text(
+                            if (hour.soundEnabled) {
+                                "Uses the sound behavior selected in Settings."
+                            } else {
+                                "This prayer will vibrate without sound."
+                            },
+                            style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
+                    Switch(
+                        checked = hour.soundEnabled,
+                        onCheckedChange = onSoundEnabledChanged,
+                        enabled = hour.enabled,
+                    )
                 }
 
                 if (highlighted && !hour.completedToday) {
                     Text(
-                        text = "Opened from this prayer notification",
+                        "Opened from this prayer notification",
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.primary,
                     )
                 }
             }
         }
-
-        if (!isLast) {
-            Spacer(Modifier.height(4.dp))
-        }
+        if (!isLast) Spacer(Modifier.height(4.dp))
     }
 }
 
 @Composable
-private fun StatusMarker(
-    status: PrayerUiStatus,
-) {
+private fun StatusMarker(status: PrayerUiStatus) {
     Box(
         modifier = Modifier
             .size(12.dp)
-            .background(
-                color = statusColor(status),
-                shape = CircleShape,
-            ),
+            .background(statusColor(status), CircleShape),
     )
 }
 
 @Composable
-private fun statusColor(
-    status: PrayerUiStatus,
-): Color =
-    when (status) {
-        PrayerUiStatus.COMPLETED ->
-            MaterialTheme.colorScheme.primary
+private fun statusColor(status: PrayerUiStatus): Color = when (status) {
+    PrayerUiStatus.COMPLETED -> MaterialTheme.colorScheme.primary
+    PrayerUiStatus.DUE -> MaterialTheme.colorScheme.tertiary
+    PrayerUiStatus.UPCOMING -> MaterialTheme.colorScheme.secondary
+    PrayerUiStatus.PASSED -> MaterialTheme.colorScheme.outline
+    PrayerUiStatus.DISABLED -> MaterialTheme.colorScheme.outlineVariant
+}
 
-        PrayerUiStatus.DUE ->
-            MaterialTheme.colorScheme.tertiary
-
-        PrayerUiStatus.UPCOMING ->
-            MaterialTheme.colorScheme.secondary
-
-        PrayerUiStatus.PASSED ->
-            MaterialTheme.colorScheme.outline
-
-        PrayerUiStatus.DISABLED ->
-            MaterialTheme.colorScheme.outlineVariant
-    }
-
-private fun statusText(
-    hour: PrayerHour,
-    status: PrayerUiStatus,
-): String =
-    when (status) {
-        PrayerUiStatus.COMPLETED ->
-            "Completed today"
-
-        PrayerUiStatus.DUE ->
-            "Prayer window open"
-
-        PrayerUiStatus.UPCOMING ->
-            "Scheduled"
-
-        PrayerUiStatus.PASSED ->
-            "Window closed"
-
-        PrayerUiStatus.DISABLED ->
-            "Notifications disabled"
-    }
+private fun statusText(status: PrayerUiStatus): String = when (status) {
+    PrayerUiStatus.COMPLETED -> "Completed today"
+    PrayerUiStatus.DUE -> "Prayer window open"
+    PrayerUiStatus.UPCOMING -> "Scheduled"
+    PrayerUiStatus.PASSED -> "Window closed"
+    PrayerUiStatus.DISABLED -> "Notifications disabled"
+}
 
 @Composable
 private fun AppFooter() {
     Column(
-        modifier = Modifier.padding(
-            top = 12.dp,
-            bottom = 8.dp,
-        ),
+        modifier = Modifier.padding(top = 12.dp, bottom = 8.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         HorizontalDivider(
-            color = MaterialTheme.colorScheme.outlineVariant
-                .copy(alpha = 0.6f),
+            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f),
         )
-
         Spacer(Modifier.height(20.dp))
-
         Text(
-            text = "Made with love by the grace of God.",
+            "Made with love by the grace of God.",
             modifier = Modifier.fillMaxWidth(),
             textAlign = TextAlign.Center,
             style = MaterialTheme.typography.labelMedium,
@@ -783,64 +652,55 @@ private fun AppFooter() {
     }
 }
 
+private fun feedbackSummary(settings: NotificationSoundSettings): String =
+    if (settings.feedbackMode == NotificationFeedbackMode.VIBRATION_ONLY) {
+        "Vibration only"
+    } else {
+        when (settings.source) {
+            NotificationSoundSource.SYSTEM_ALARM -> "System alarm sound"
+            NotificationSoundSource.ONBOARD -> "Onboard sound"
+            NotificationSoundSource.CUSTOM -> "Custom sound"
+        }
+    }
+
 private fun findNextPrayer(
     hours: List<PrayerHour>,
     now: LocalDateTime,
 ): NextPrayer? {
-    val enabledHours = hours
-        .filter { it.enabled }
-        .sortedBy { it.targetTime }
+    val enabledHours = hours.filter { it.enabled }.sortedBy { it.targetTime }
+    if (enabledHours.isEmpty()) return null
 
-    if (enabledHours.isEmpty()) {
-        return null
-    }
-
-    val duePrayer = enabledHours.firstOrNull { hour ->
-        if (hour.completedToday) {
-            return@firstOrNull false
-        }
-
+    val due = enabledHours.firstOrNull { hour ->
+        if (hour.completedToday) return@firstOrNull false
         val target = now.toLocalDate().atTime(hour.targetTime)
-        val closes = target.plusMinutes(
-            hour.windowMinutes.toLong(),
-        )
-
+        val closes = target.plusMinutes(hour.windowMinutes.toLong())
         !now.isBefore(target) && now.isBefore(closes)
     }
-
-    if (duePrayer != null) {
+    if (due != null) {
         return NextPrayer(
-            hour = duePrayer,
-            dateTime = now.toLocalDate()
-                .atTime(duePrayer.targetTime),
+            due,
+            now.toLocalDate().atTime(due.targetTime),
             isDue = true,
             isTomorrow = false,
         )
     }
 
-    val upcomingToday = enabledHours.firstOrNull { hour ->
-        !hour.completedToday &&
-                now.toLocalTime().isBefore(hour.targetTime)
+    val upcoming = enabledHours.firstOrNull { hour ->
+        !hour.completedToday && now.toLocalTime().isBefore(hour.targetTime)
     }
-
-    if (upcomingToday != null) {
+    if (upcoming != null) {
         return NextPrayer(
-            hour = upcomingToday,
-            dateTime = now.toLocalDate()
-                .atTime(upcomingToday.targetTime),
+            upcoming,
+            now.toLocalDate().atTime(upcoming.targetTime),
             isDue = false,
             isTomorrow = false,
         )
     }
 
-    val firstTomorrow = enabledHours.firstOrNull()
-        ?: return null
-
+    val firstTomorrow = enabledHours.first()
     return NextPrayer(
-        hour = firstTomorrow,
-        dateTime = now.toLocalDate()
-            .plusDays(1)
-            .atTime(firstTomorrow.targetTime),
+        firstTomorrow,
+        now.toLocalDate().plusDays(1).atTime(firstTomorrow.targetTime),
         isDue = false,
         isTomorrow = true,
     )
@@ -854,42 +714,21 @@ private fun nextPrayerRelativeText(
         val closesAt = nextPrayer.dateTime.plusMinutes(
             nextPrayer.hour.windowMinutes.toLong(),
         )
-
-        val minutesRemaining = Duration.between(
-            now,
-            closesAt,
-        ).toMinutes().coerceAtLeast(1)
-
-        return "$minutesRemaining min left"
+        return "${Duration.between(now, closesAt).toMinutes().coerceAtLeast(1)} min left"
     }
 
-    val duration = Duration.between(
-        now,
-        nextPrayer.dateTime,
-    )
-
-    val totalMinutes = duration
+    val totalMinutes = Duration.between(now, nextPrayer.dateTime)
         .toMinutes()
         .coerceAtLeast(0)
-
     val hours = totalMinutes / 60
     val minutes = totalMinutes % 60
 
     return when {
-        hours >= 24 ->
-            "Tomorrow"
-
-        hours > 0 && minutes > 0 ->
-            "${hours}h ${minutes}m"
-
-        hours > 0 ->
-            "${hours}h"
-
-        minutes > 0 ->
-            "${minutes}m"
-
-        else ->
-            "Now"
+        hours >= 24 -> "Tomorrow"
+        hours > 0 && minutes > 0 -> "${hours}h ${minutes}m"
+        hours > 0 -> "${hours}h"
+        minutes > 0 -> "${minutes}m"
+        else -> "Now"
     }
 }
 
@@ -897,30 +736,15 @@ private fun prayerStatus(
     hour: PrayerHour,
     now: LocalDateTime,
 ): PrayerUiStatus {
-    if (!hour.enabled) {
-        return PrayerUiStatus.DISABLED
-    }
+    if (!hour.enabled) return PrayerUiStatus.DISABLED
+    if (hour.completedToday) return PrayerUiStatus.COMPLETED
 
-    if (hour.completedToday) {
-        return PrayerUiStatus.COMPLETED
-    }
-
-    val target = now.toLocalDate().atTime(
-        hour.targetTime,
-    )
-    val closes = target.plusMinutes(
-        hour.windowMinutes.toLong(),
-    )
-
+    val target = now.toLocalDate().atTime(hour.targetTime)
+    val closes = target.plusMinutes(hour.windowMinutes.toLong())
     return when {
-        now.isBefore(target) ->
-            PrayerUiStatus.UPCOMING
-
-        now.isBefore(closes) ->
-            PrayerUiStatus.DUE
-
-        else ->
-            PrayerUiStatus.PASSED
+        now.isBefore(target) -> PrayerUiStatus.UPCOMING
+        now.isBefore(closes) -> PrayerUiStatus.DUE
+        else -> PrayerUiStatus.PASSED
     }
 }
 
