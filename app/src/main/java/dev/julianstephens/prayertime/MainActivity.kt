@@ -32,6 +32,15 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.VolumeOff
+import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -504,12 +513,53 @@ private fun PrayerHourRow(
                             color = statusColor(status),
                         )
                     }
+                    IconButton(
+                        onClick = {
+                            onSoundEnabledChanged(
+                                !hour.soundEnabled,
+                            )
+                        },
+                        enabled = hour.enabled,
+                        colors = IconButtonDefaults.iconButtonColors(
+                            contentColor = if (hour.soundEnabled) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme
+                                    .onSurfaceVariant
+                            },
+                        ),
+                        modifier = Modifier.semantics {
+                            stateDescription =
+                                if (hour.soundEnabled) {
+                                    "Sound on"
+                                } else {
+                                    "Sound off"
+                                }
+                        },
+                    ) {
+                        Icon(
+                            imageVector = if (hour.soundEnabled) {
+                                Icons.Filled.VolumeUp
+                            } else {
+                                Icons.Filled.VolumeOff
+                            },
+                            contentDescription =
+                                if (hour.soundEnabled) {
+                                    "Mute ${hour.name}"
+                                } else {
+                                    "Enable sound for ${hour.name}"
+                                },
+                        )
+                    }
+
                     Switch(
                         checked = hour.enabled,
                         onCheckedChange = onEnabledChanged,
                         colors = SwitchDefaults.colors(
-                            checkedThumbColor = MaterialTheme.colorScheme.onPrimary,
-                            checkedTrackColor = MaterialTheme.colorScheme.primary,
+                            checkedThumbColor =
+                                MaterialTheme.colorScheme.onPrimary,
+                            checkedTrackColor =
+                                MaterialTheme.colorScheme.primary,
                         ),
                     )
                 }
@@ -560,36 +610,6 @@ private fun PrayerHourRow(
                         "Prayed",
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-
-                HorizontalDivider(
-                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
-                )
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            if (hour.soundEnabled) "Sound on" else "Muted",
-                            style = MaterialTheme.typography.labelLarge,
-                        )
-                        Text(
-                            if (hour.soundEnabled) {
-                                "Uses the sound behavior selected in Settings."
-                            } else {
-                                "This prayer will vibrate without sound."
-                            },
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    Switch(
-                        checked = hour.soundEnabled,
-                        onCheckedChange = onSoundEnabledChanged,
-                        enabled = hour.enabled,
                     )
                 }
 
@@ -657,9 +677,9 @@ private fun feedbackSummary(settings: NotificationSoundSettings): String =
         "Vibration only"
     } else {
         when (settings.source) {
-            NotificationSoundSource.SYSTEM_ALARM -> "System alarm sound"
-            NotificationSoundSource.ONBOARD -> "Onboard sound"
-            NotificationSoundSource.CUSTOM -> "Custom sound"
+            NotificationSoundSource.SYSTEM_ALARM -> "Using system alarm sound"
+            NotificationSoundSource.ONBOARD -> "Using onboard sound"
+            NotificationSoundSource.CUSTOM -> "Using custom sound"
         }
     }
 

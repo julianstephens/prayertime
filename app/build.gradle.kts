@@ -88,6 +88,9 @@ dependencies {
     coreLibraryDesugaring(
         "com.android.tools:desugar_jdk_libs:2.1.5"
     )
+    implementation(
+        libs.androidx.compose.material.icons.extended,
+    )
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.compose.material3)
