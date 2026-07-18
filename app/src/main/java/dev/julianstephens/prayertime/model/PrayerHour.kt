@@ -13,6 +13,7 @@ data class PrayerHour(
     val id: PrayerHourId,
     val name: String,
     val targetTime: LocalTime,
+    val windowMinutes: Int = 60,
     val enabled: Boolean = true,
     val completedToday: Boolean = false,
 )
@@ -27,11 +28,13 @@ val defaultPrayerHours = listOf(
         id = PrayerHourId.SEXT,
         name = "Sext",
         targetTime = LocalTime.of(12, 0),
+        windowMinutes = 90,
     ),
     PrayerHour(
         id = PrayerHourId.NONE,
         name = "None",
         targetTime = LocalTime.of(15, 0),
+        windowMinutes = 90,
     ),
     PrayerHour(
         id = PrayerHourId.COMPLINE,
