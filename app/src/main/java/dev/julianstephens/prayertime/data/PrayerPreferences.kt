@@ -14,7 +14,6 @@ enum class PrayerResolution {
     MISSED,
 }
 
-
 class PrayerPreferences(context: Context) {
 
     private val preferences = context.getSharedPreferences(
@@ -23,21 +22,20 @@ class PrayerPreferences(context: Context) {
     )
 
     fun loadHours(): List<PrayerHour> {
-        resetCompletionsIfDateChanged()
+        val today = LocalDate.now()
 
         return defaultPrayerHours.map { default ->
             PrayerHour(
                 id = default.id,
                 name = default.name,
                 targetTime = loadTime(default),
+                windowMinutes = default.windowMinutes,
                 enabled = preferences.getBoolean(
                     enabledKey(default.id),
                     default.enabled,
                 ),
-                completedToday = preferences.getBoolean(
-                    completedKey(default.id),
-                    false,
-                ),
+                completedToday = loadResolution(default.id, today) ==
+                    PrayerResolution.COMPLETED,
             )
         }
     }
@@ -56,37 +54,34 @@ class PrayerPreferences(context: Context) {
     }
 
     fun saveCompleted(id: PrayerHourId, completed: Boolean) {
-        ensureCompletionDateIsCurrent()
-
-        preferences.edit()
-            .putBoolean(completedKey(id), completed)
-            .apply()
+        saveResolution(
+            id,
+            LocalDate.now(),
+            if (completed) PrayerResolution.COMPLETED else PrayerResolution.PENDING,
+        )
     }
 
-    fun loadResolution(prayerId: PrayerHourId, date: LocalDate): PrayerResolution {
-        val storedDate = preferences.getString(COMPLETION_DATE_KEY, null)
-        if (storedDate != date.toString()) {
-            return PrayerResolution.PENDING
-        }
+    fun loadResolution(
+        prayerId: PrayerHourId,
+        date: LocalDate,
+    ): PrayerResolution {
+        val value = preferences.getString(
+            resolutionKey(prayerId, date),
+            PrayerResolution.PENDING.name,
+        )
 
-        val completed = preferences.getBoolean(completedKey(prayerId), false)
-        return if (completed) {
-            PrayerResolution.COMPLETED
-        } else {
-            PrayerResolution.PENDING
-        }
+        return runCatching {
+            PrayerResolution.valueOf(value ?: PrayerResolution.PENDING.name)
+        }.getOrDefault(PrayerResolution.PENDING)
     }
 
-    fun saveResolution(prayerId: PrayerHourId, date: LocalDate, resolution: PrayerResolution) {
-        ensureCompletionDateIsCurrent()
-
-        val completed = when (resolution) {
-            PrayerResolution.COMPLETED -> true
-            else -> false
-        }
-
+    fun saveResolution(
+        prayerId: PrayerHourId,
+        date: LocalDate,
+        resolution: PrayerResolution,
+    ) {
         preferences.edit()
-            .putBoolean(completedKey(prayerId), completed)
+            .putString(resolutionKey(prayerId, date), resolution.name)
             .apply()
     }
 
@@ -103,35 +98,11 @@ class PrayerPreferences(context: Context) {
         return LocalTime.of(hour, minute)
     }
 
-    private fun resetCompletionsIfDateChanged() {
-        val today = LocalDate.now().toString()
-        val storedDate = preferences.getString(COMPLETION_DATE_KEY, null)
-
-        if (storedDate == today) {
-            return
-        }
-
-        val editor = preferences.edit()
-            .putString(COMPLETION_DATE_KEY, today)
-
-        PrayerHourId.entries.forEach { id ->
-            editor.remove(completedKey(id))
-        }
-
-        editor.apply()
-    }
-
-    private fun ensureCompletionDateIsCurrent() {
-        resetCompletionsIfDateChanged()
-    }
-
     private fun hourKey(id: PrayerHourId) = "${id.name}_hour"
 
     private fun minuteKey(id: PrayerHourId) = "${id.name}_minute"
 
     private fun enabledKey(id: PrayerHourId) = "${id.name}_enabled"
-
-    private fun completedKey(id: PrayerHourId) = "${id.name}_completed"
 
     private fun resolutionKey(
         prayerId: PrayerHourId,
@@ -140,7 +111,5 @@ class PrayerPreferences(context: Context) {
 
     private companion object {
         const val PREFERENCES_NAME = "prayer_time_preferences"
-        const val COMPLETION_DATE_KEY = "completion_date"
     }
 }
-
