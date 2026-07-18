@@ -13,6 +13,7 @@ data class PrayerHour(
     val targetTime: LocalTime,
     val windowMinutes: Int = 60,
     val enabled: Boolean = true,
+    val soundEnabled: Boolean = true,
     val sortOrder: Int = 0,
     val completedToday: Boolean = false,
 )
