@@ -27,6 +27,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -45,10 +46,13 @@ import dev.julianstephens.prayertime.PrayerTimeViewModel
 import dev.julianstephens.prayertime.data.NotificationFeedbackMode
 import dev.julianstephens.prayertime.data.NotificationSoundSettings
 import dev.julianstephens.prayertime.data.NotificationSoundSource
+import dev.julianstephens.prayertime.data.NotificationVolumeMode
+import dev.julianstephens.prayertime.data.PrayerPreferences
 import dev.julianstephens.prayertime.model.PrayerHour
 import dev.julianstephens.prayertime.model.PrayerHourId
 import java.time.LocalTime
 import java.time.format.DateTimeFormatter
+import kotlin.math.roundToInt
 
 @Composable
 fun EditPrayerDialog(
@@ -197,6 +201,18 @@ fun SettingsScreen(
     onFeedbackModeChanged: (NotificationFeedbackMode) -> Unit,
     onSelectCustomSound: () -> Unit,
 ) {
+    val context = LocalContext.current
+    var currentSettings by remember(soundSettings) {
+        mutableStateOf(soundSettings)
+    }
+
+    fun saveAdditionalSettings(updated: NotificationSoundSettings) {
+        PrayerPreferences(context).saveNotificationSoundSettings(updated)
+        currentSettings = updated
+        // Refresh the ViewModel while preserving fields written directly here.
+        onSoundSourceChanged(updated.source)
+    }
+
     Scaffold(
         contentWindowInsets = WindowInsets(0),
         topBar = {
@@ -240,13 +256,13 @@ fun SettingsScreen(
             item {
                 SettingsSectionHeader(
                     title = "Sound",
-                    body = "Choose the sound used by prayer notifications.",
+                    body = "Choose how prayer notifications sound and interrupt you.",
                 )
             }
 
             item {
                 SoundSourceCard(
-                    settings = soundSettings,
+                    settings = currentSettings,
                     onSoundSourceChanged = onSoundSourceChanged,
                     onSelectCustomSound = onSelectCustomSound,
                 )
@@ -254,9 +270,38 @@ fun SettingsScreen(
 
             item {
                 FeedbackCard(
-                    selected = soundSettings.feedbackMode,
+                    selected = currentSettings.feedbackMode,
                     onSelected = onFeedbackModeChanged,
                 )
+            }
+
+            item {
+                InterruptionCard(
+                    overridePhoneSoundMode = currentSettings.overridePhoneSoundMode,
+                    onOverrideChanged = {
+                        saveAdditionalSettings(
+                            currentSettings.copy(overridePhoneSoundMode = it),
+                        )
+                    },
+                )
+            }
+
+            if (currentSettings.feedbackMode == NotificationFeedbackMode.SOUND_AND_VIBRATION) {
+                item {
+                    VolumeCard(
+                        settings = currentSettings,
+                        onVolumeModeChanged = {
+                            saveAdditionalSettings(
+                                currentSettings.copy(volumeMode = it),
+                            )
+                        },
+                        onCustomVolumeChanged = {
+                            saveAdditionalSettings(
+                                currentSettings.copy(customVolumePercent = it),
+                            )
+                        },
+                    )
+                }
             }
         }
     }
@@ -305,7 +350,8 @@ private fun SoundSourceCard(
             )
             SoundChoice(
                 title = "Custom file",
-                description = settings.customSoundName ?: "Select an audio file from this device.",
+                description = settings.customSoundName
+                    ?: "Select an audio file from this device.",
                 selected = settings.source == NotificationSoundSource.CUSTOM,
                 onClick = {
                     if (settings.customSoundUri == null) onSelectCustomSound()
@@ -391,10 +437,101 @@ private fun FeedbackCard(
                 modifier = Modifier.fillMaxWidth(),
             )
             Text(
-                "Muted prayer times always use vibration only.",
+                "Muted prayer times always post silently without sound or vibration.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+        }
+    }
+}
+
+@Composable
+private fun InterruptionCard(
+    overridePhoneSoundMode: Boolean,
+    onOverrideChanged: (Boolean) -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainer,
+        ),
+    ) {
+        Row(
+            modifier = Modifier.padding(18.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Text("Override phone sound mode", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    if (overridePhoneSoundMode) {
+                        "Prayer sounds may play while the phone is silent or set to vibrate."
+                    } else {
+                        "Respect the phone's silent and vibrate settings."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(
+                checked = overridePhoneSoundMode,
+                onCheckedChange = onOverrideChanged,
+            )
+        }
+    }
+}
+
+@Composable
+private fun VolumeCard(
+    settings: NotificationSoundSettings,
+    onVolumeModeChanged: (NotificationVolumeMode) -> Unit,
+    onCustomVolumeChanged: (Int) -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainer,
+        ),
+    ) {
+        Column(
+            modifier = Modifier.padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Text("Sound volume", style = MaterialTheme.typography.titleMedium)
+            FilterChip(
+                selected = settings.volumeMode == NotificationVolumeMode.PHONE_ALARM,
+                onClick = { onVolumeModeChanged(NotificationVolumeMode.PHONE_ALARM) },
+                label = { Text("Use phone alarm volume") },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            FilterChip(
+                selected = settings.volumeMode == NotificationVolumeMode.CUSTOM,
+                onClick = { onVolumeModeChanged(NotificationVolumeMode.CUSTOM) },
+                label = { Text("Use custom volume") },
+                modifier = Modifier.fillMaxWidth(),
+            )
+
+            if (settings.volumeMode == NotificationVolumeMode.CUSTOM) {
+                Text(
+                    "${settings.customVolumePercent}%",
+                    style = MaterialTheme.typography.labelLarge,
+                )
+                Slider(
+                    value = settings.customVolumePercent.toFloat(),
+                    onValueChange = {
+                        onCustomVolumeChanged(it.roundToInt().coerceIn(0, 100))
+                    },
+                    valueRange = 0f..100f,
+                    steps = 9,
+                )
+                Text(
+                    "Custom volume is applied to the selected sound without changing the phone's alarm volume.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
     }
 }
