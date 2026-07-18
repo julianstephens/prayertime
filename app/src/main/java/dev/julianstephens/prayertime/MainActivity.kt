@@ -43,6 +43,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -55,11 +56,17 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.julianstephens.prayertime.model.PrayerHour
 import dev.julianstephens.prayertime.model.PrayerHourId
 import dev.julianstephens.prayertime.notifications.PrayerAlarmReceiver
 import dev.julianstephens.prayertime.ui.theme.PrayerTimeTheme
+import dev.julianstephens.prayertime.ui.settings.EditPrayerDialog
+import dev.julianstephens.prayertime.ui.settings.SettingsScreen
 import java.time.Duration
 import java.time.LocalDate
 import java.time.LocalDateTime
@@ -88,7 +95,7 @@ class MainActivity : ComponentActivity() {
             ?.getStringExtra(PrayerAlarmReceiver.EXTRA_PRAYER_ID)
             ?.let { value ->
                 runCatching {
-                    PrayerHourId.valueOf(value)
+                    PrayerHourId(value)
                 }.getOrNull()
             }
 
@@ -131,6 +138,76 @@ private fun PrayerTimeApp(
     initiallyOpenedPrayerId: PrayerHourId?,
 ) {
     val hours by viewModel.hours.collectAsStateWithLifecycle()
+
+    var showingSettings by rememberSaveable {
+        mutableStateOf(false)
+    }
+
+    var editingId by remember {
+        mutableStateOf<PrayerHourId?>(null)
+    }
+
+    val editingHour = editingId?.let { id ->
+        hours.firstOrNull { it.id == id }
+    }
+
+    if (showingSettings) {
+        SettingsScreen(
+            hours = hours,
+            onBack = {
+                showingSettings = false
+            },
+            onAdd = {
+                editingId = viewModel.addPrayerHour()
+            },
+            onEdit = { id ->
+                editingId = id
+            },
+        )
+    } else {
+        TodayContent(
+            hours = hours,
+            initiallyOpenedPrayerId = initiallyOpenedPrayerId,
+            onOpenSettings = {
+                showingSettings = true
+            },
+            onTimeChanged = viewModel::updateTime,
+            onEnabledChanged = viewModel::updateEnabled,
+            onCompletedChanged = viewModel::markCompleted,
+        )
+    }
+
+    if (editingHour != null) {
+        EditPrayerDialog(
+            hour = editingHour,
+            canDelete = hours.size >
+                    PrayerTimeViewModel.MIN_PRAYER_HOURS,
+            onDismiss = {
+                editingId = null
+            },
+            onSave = { updatedHour ->
+                viewModel.updateHour(updatedHour)
+                editingId = null
+            },
+            onDelete = {
+                viewModel.deletePrayerHour(
+                    editingHour.id,
+                )
+                editingId = null
+            },
+        )
+    }
+}
+
+@Composable
+private fun TodayContent(
+    hours: List<PrayerHour>,
+    initiallyOpenedPrayerId: PrayerHourId?,
+    onOpenSettings: () -> Unit,
+    onTimeChanged: (PrayerHourId, LocalTime) -> Unit,
+    onEnabledChanged: (PrayerHourId, Boolean) -> Unit,
+    onCompletedChanged: (PrayerHourId, Boolean) -> Unit,
+) {
     val now = LocalDateTime.now()
     val nextPrayer = findNextPrayer(hours, now)
 
@@ -163,10 +240,13 @@ private fun PrayerTimeApp(
                     top = 24.dp,
                     bottom = 32.dp,
                 ),
-                verticalArrangement = Arrangement.spacedBy(16.dp),
+                verticalArrangement =
+                    Arrangement.spacedBy(16.dp),
             ) {
                 item {
-                    AppHeader()
+                    AppHeader(
+                        onOpenSettings = onOpenSettings,
+                    )
                 }
 
                 item {
@@ -174,7 +254,7 @@ private fun PrayerTimeApp(
                         nextPrayer = nextPrayer,
                         now = now,
                         onMarkCompleted = { prayerId ->
-                            viewModel.markCompleted(
+                            onCompletedChanged(
                                 prayerId,
                                 true,
                             )
@@ -191,27 +271,32 @@ private fun PrayerTimeApp(
 
                 itemsIndexed(
                     items = hours,
-                    key = { _, hour -> hour.id },
+                    key = { _, hour ->
+                        hour.id.value
+                    },
                 ) { index, hour ->
                     PrayerHourRow(
                         hour = hour,
                         now = now,
-                        highlighted = hour.id == initiallyOpenedPrayerId,
-                        isLast = index == hours.lastIndex,
+                        highlighted =
+                            hour.id ==
+                                    initiallyOpenedPrayerId,
+                        isLast =
+                            index == hours.lastIndex,
                         onTimeChanged = { time ->
-                            viewModel.updateTime(
+                            onTimeChanged(
                                 hour.id,
                                 time,
                             )
                         },
                         onEnabledChanged = { enabled ->
-                            viewModel.updateEnabled(
+                            onEnabledChanged(
                                 hour.id,
                                 enabled,
                             )
                         },
                         onCompletedChanged = { completed ->
-                            viewModel.markCompleted(
+                            onCompletedChanged(
                                 hour.id,
                                 completed,
                             )
@@ -227,32 +312,55 @@ private fun PrayerTimeApp(
     }
 }
 
+
 @Composable
-private fun AppHeader() {
-    Column(
-        verticalArrangement = Arrangement.spacedBy(6.dp),
+private fun AppHeader(
+    onOpenSettings: () -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.Top,
     ) {
-        Text(
-            text = LocalDate.now().format(
-                DateTimeFormatter.ofLocalizedDate(
-                    FormatStyle.FULL,
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement =
+                Arrangement.spacedBy(6.dp),
+        ) {
+            Text(
+                text = LocalDate.now().format(
+                    DateTimeFormatter
+                        .ofLocalizedDate(
+                            FormatStyle.FULL,
+                        ),
                 ),
-            ),
-            style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.primary,
-        )
+                style =
+                    MaterialTheme.typography.labelLarge,
+                color =
+                    MaterialTheme.colorScheme.primary,
+            )
 
-        Text(
-            text = "Prayer Time",
-            style = MaterialTheme.typography.displaySmall,
-            color = MaterialTheme.colorScheme.onBackground,
-        )
+            Text(
+                text = "Prayer Time",
+                style =
+                    MaterialTheme.typography.displaySmall,
+                color =
+                    MaterialTheme.colorScheme.onBackground,
+            )
 
-        Text(
-            text = "A daily rhythm of interruption and attention.",
-            style = MaterialTheme.typography.bodyLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+            Text(
+                text = "A daily rhythm of interruption and attention.",
+                style =
+                    MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme
+                    .onSurfaceVariant,
+            )
+        }
+
+        TextButton(
+            onClick = onOpenSettings,
+        ) {
+            Text("Settings")
+        }
     }
 }
 

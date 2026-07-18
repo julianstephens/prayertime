@@ -11,21 +11,57 @@ import java.time.LocalDate
 
 class PrayerWindowReceiver : BroadcastReceiver() {
 
-    override fun onReceive(context: Context, intent: Intent) {
-        val prayerId = intent.getStringExtra(PrayerAlarmReceiver.EXTRA_PRAYER_ID)
-            ?.let { runCatching { PrayerHourId.valueOf(it) }.getOrNull() }
-            ?: return
-        val date = intent.getStringExtra(PrayerAlarmReceiver.EXTRA_OCCURRENCE_DATE)
-            ?.let { runCatching { LocalDate.parse(it) }.getOrNull() }
+    override fun onReceive(
+        context: Context,
+        intent: Intent,
+    ) {
+        val prayerId = intent
+            .getStringExtra(
+                PrayerAlarmReceiver.EXTRA_PRAYER_ID,
+            )
+            ?.let(::PrayerHourId)
             ?: return
 
-        val preferences = PrayerPreferences(context)
-        if (preferences.loadResolution(prayerId, date) == PrayerResolution.PENDING) {
-            preferences.saveResolution(prayerId, date, PrayerResolution.MISSED)
+        val date = intent
+            .getStringExtra(
+                PrayerAlarmReceiver.EXTRA_OCCURRENCE_DATE,
+            )
+            ?.let {
+                runCatching {
+                    LocalDate.parse(it)
+                }.getOrNull()
+            }
+            ?: return
+
+        val preferences =
+            PrayerPreferences(context)
+
+        if (
+            preferences.loadResolution(
+                prayerId,
+                date,
+            ) == PrayerResolution.PENDING
+        ) {
+            preferences.saveResolution(
+                prayerId,
+                date,
+                PrayerResolution.MISSED,
+            )
         }
 
-        PrayerAlarmScheduler(context).cancelDelayed(prayerId, date)
-        NotificationManagerCompat.from(context)
-            .cancel(PrayerAlarmReceiver.notificationId(prayerId, date))
+        PrayerAlarmScheduler(context)
+            .cancelDelayed(
+                prayerId,
+                date,
+            )
+
+        NotificationManagerCompat
+            .from(context)
+            .cancel(
+                PrayerAlarmReceiver.notificationId(
+                    prayerId,
+                    date,
+                ),
+            )
     }
 }
