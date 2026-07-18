@@ -32,9 +32,7 @@ class PrayerPreferences(
     fun loadHours(): List<PrayerHour> {
         val today = LocalDate.now()
 
-        return normalizeSchedule(
-            loadStoredSchedule(),
-        ).map { hour ->
+        return normalizeSchedule(loadStoredSchedule()).map { hour ->
             hour.copy(
                 completedToday = loadResolution(
                     hour.id,
@@ -44,88 +42,72 @@ class PrayerPreferences(
         }
     }
 
-    fun addHour(
-        hour: PrayerHour,
-    ) {
-        val hours = loadStoredSchedule()
-            .toMutableList()
+    fun addHour(hour: PrayerHour) {
+        val hours = loadStoredSchedule().toMutableList()
+        if (hours.any { it.id == hour.id }) return
 
-        if (hours.any { it.id == hour.id }) {
-            return
-        }
-
-        hours += hour.copy(
-            completedToday = false,
-        )
-
+        hours += hour.copy(completedToday = false)
         saveSchedule(hours)
     }
 
     fun updateHour(updatedHour: PrayerHour) {
-        val hours = loadStoredSchedule()
-        val updated = hours.map { existing ->
+        val updated = loadStoredSchedule().map { existing ->
             if (existing.id == updatedHour.id) {
-                updatedHour.copy(
-                    completedToday = false,
-                )
+                updatedHour.copy(completedToday = false)
             } else {
                 existing
             }
         }
-
         saveSchedule(updated)
     }
 
-    fun deleteHour(
-        id: PrayerHourId,
-    ) {
-        val hours = loadStoredSchedule()
-            .filterNot { it.id == id }
-
-        saveSchedule(hours)
+    fun deleteHour(id: PrayerHourId) {
+        saveSchedule(loadStoredSchedule().filterNot { it.id == id })
         deleteResolutionRecords(id)
     }
 
-    fun saveTime(
-        id: PrayerHourId,
-        time: LocalTime,
-    ) {
-        mutateHour(id) { hour ->
-            hour.copy(targetTime = time)
-        }
+    fun saveTime(id: PrayerHourId, time: LocalTime) {
+        mutateHour(id) { it.copy(targetTime = time) }
     }
 
-    fun saveEnabled(
-        id: PrayerHourId,
-        enabled: Boolean,
-    ) {
-        mutateHour(id) { hour ->
-            hour.copy(enabled = enabled)
-        }
+    fun saveEnabled(id: PrayerHourId, enabled: Boolean) {
+        mutateHour(id) { it.copy(enabled = enabled) }
     }
 
-    fun saveName(
-        id: PrayerHourId,
-        name: String,
-    ) {
-        mutateHour(id) { hour ->
-            hour.copy(name = name)
-        }
+    fun saveSoundEnabled(id: PrayerHourId, enabled: Boolean) {
+        mutateHour(id) { it.copy(soundEnabled = enabled) }
     }
 
-    fun saveWindowMinutes(
-        id: PrayerHourId,
-        windowMinutes: Int,
-    ) {
-        mutateHour(id) { hour ->
-            hour.copy(windowMinutes = windowMinutes)
-        }
+    fun saveName(id: PrayerHourId, name: String) {
+        mutateHour(id) { it.copy(name = name) }
     }
 
-    fun saveCompleted(
-        id: PrayerHourId,
-        completed: Boolean,
-    ) {
+    fun saveWindowMinutes(id: PrayerHourId, windowMinutes: Int) {
+        mutateHour(id) { it.copy(windowMinutes = windowMinutes) }
+    }
+
+    fun loadNotificationSoundSettings(): NotificationSoundSettings =
+        NotificationSoundSettings(
+            source = preferences.getString(SOUND_SOURCE_KEY, null)
+                ?.let { runCatching { NotificationSoundSource.valueOf(it) }.getOrNull() }
+                ?: NotificationSoundSource.ONBOARD,
+            feedbackMode = preferences.getString(FEEDBACK_MODE_KEY, null)
+                ?.let { runCatching { NotificationFeedbackMode.valueOf(it) }.getOrNull() }
+                ?: NotificationFeedbackMode.SOUND_AND_VIBRATION,
+            customSoundUri = preferences.getString(CUSTOM_SOUND_URI_KEY, null),
+            customSoundName = preferences.getString(CUSTOM_SOUND_NAME_KEY, null),
+        )
+
+    fun saveNotificationSoundSettings(settings: NotificationSoundSettings) {
+        preferences.edit()
+            .putString(SOUND_SOURCE_KEY, settings.source.name)
+            .putString(FEEDBACK_MODE_KEY, settings.feedbackMode.name)
+            .putString(CUSTOM_SOUND_URI_KEY, settings.customSoundUri)
+            .putString(CUSTOM_SOUND_NAME_KEY, settings.customSoundName)
+            .apply()
+    }
+
+    fun saveCompleted(id: PrayerHourId, completed: Boolean) {
         saveResolution(
             prayerId = id,
             date = LocalDate.now(),
@@ -145,22 +127,13 @@ class PrayerPreferences(
             resolutionKey(prayerId, date),
             null,
         )
+        if (currentValue != null) return parseResolution(currentValue)
 
-        if (currentValue != null) {
-            return parseResolution(currentValue)
-        }
-
-        // Preserve today's state from the original enum-backed format.
         val legacyValue = preferences.getString(
             legacyResolutionKey(prayerId, date),
             null,
         )
-
-        return if (legacyValue != null) {
-            parseResolution(legacyValue)
-        } else {
-            PrayerResolution.PENDING
-        }
+        return legacyValue?.let(::parseResolution) ?: PrayerResolution.PENDING
     }
 
     fun saveResolution(
@@ -169,10 +142,7 @@ class PrayerPreferences(
         resolution: PrayerResolution,
     ) {
         preferences.edit()
-            .putString(
-                resolutionKey(prayerId, date),
-                resolution.name,
-            )
+            .putString(resolutionKey(prayerId, date), resolution.name)
             .apply()
     }
 
@@ -180,32 +150,22 @@ class PrayerPreferences(
         id: PrayerHourId,
         transform: (PrayerHour) -> PrayerHour,
     ) {
-        val hours = loadStoredSchedule()
-        val updated = hours.map { hour ->
-            if (hour.id == id) {
-                transform(hour)
-            } else {
-                hour
-            }
-        }
-
-        saveSchedule(updated)
+        saveSchedule(
+            loadStoredSchedule().map { hour ->
+                if (hour.id == id) transform(hour) else hour
+            },
+        )
     }
 
     private fun ensureScheduleExists() {
-        if (preferences.contains(SCHEDULE_KEY)) {
-            return
+        if (!preferences.contains(SCHEDULE_KEY)) {
+            saveSchedule(migrateLegacySchedule())
         }
-
-        saveSchedule(
-            migrateLegacySchedule(),
-        )
     }
 
     private fun migrateLegacySchedule(): List<PrayerHour> =
         defaultPrayerHours.map { default ->
             val legacyPrefix = default.id.value.uppercase()
-
             default.copy(
                 targetTime = LocalTime.of(
                     preferences.getInt(
@@ -225,36 +185,29 @@ class PrayerPreferences(
         }
 
     private fun loadStoredSchedule(): List<PrayerHour> {
-        val raw = preferences.getString(
-            SCHEDULE_KEY,
-            null,
-        ) ?: return defaultPrayerHours
+        val raw = preferences.getString(SCHEDULE_KEY, null)
+            ?: return defaultPrayerHours
 
         return runCatching {
             val array = JSONArray(raw)
-
             buildList {
                 for (index in 0 until array.length()) {
-                    val objectValue = array.getJSONObject(index)
-
+                    val value = array.getJSONObject(index)
                     add(
                         PrayerHour(
-                            id = PrayerHourId(
-                                objectValue.getString("id"),
-                            ),
-                            name = objectValue.getString("name"),
+                            id = PrayerHourId(value.getString("id")),
+                            name = value.getString("name"),
                             targetTime = LocalTime.of(
-                                objectValue.getInt("hour"),
-                                objectValue.getInt("minute"),
+                                value.getInt("hour"),
+                                value.getInt("minute"),
                             ),
-                            windowMinutes = objectValue.optInt(
+                            windowMinutes = value.optInt(
                                 "windowMinutes",
                                 DEFAULT_WINDOW_MINUTES,
                             ),
-                            enabled = objectValue.optBoolean(
-                                "enabled",
-                                true,
-                            ),
+                            enabled = value.optBoolean("enabled", true),
+                            soundEnabled = value.optBoolean("soundEnabled", true),
+                            sortOrder = index,
                         ),
                     )
                 }
@@ -265,88 +218,54 @@ class PrayerPreferences(
         }
     }
 
-    private fun saveSchedule(
-        hours: List<PrayerHour>,
-    ) {
-        val normalized = normalizeSchedule(hours)
+    private fun saveSchedule(hours: List<PrayerHour>) {
         val array = JSONArray()
-
-        normalized.forEach { hour ->
+        normalizeSchedule(hours).forEach { hour ->
             array.put(
                 JSONObject().apply {
                     put("id", hour.id.value)
                     put("name", hour.name)
                     put("hour", hour.targetTime.hour)
                     put("minute", hour.targetTime.minute)
-                    put(
-                        "windowMinutes",
-                        hour.windowMinutes,
-                    )
+                    put("windowMinutes", hour.windowMinutes)
                     put("enabled", hour.enabled)
+                    put("soundEnabled", hour.soundEnabled)
                 },
             )
         }
 
         preferences.edit()
-            .putString(
-                SCHEDULE_KEY,
-                array.toString(),
-            )
+            .putString(SCHEDULE_KEY, array.toString())
             .apply()
     }
 
-
-    private fun deleteResolutionRecords(
-        id: PrayerHourId,
-    ) {
+    private fun deleteResolutionRecords(id: PrayerHourId) {
         val currentPrefix = "resolution_${id.value}_"
-        val legacyPrefix =
-            "resolution_${id.value.uppercase()}_"
-
+        val legacyPrefix = "resolution_${id.value.uppercase()}_"
         val editor = preferences.edit()
 
         preferences.all.keys
-            .filter { key ->
-                key.startsWith(currentPrefix) ||
-                        key.startsWith(legacyPrefix)
-            }
+            .filter { it.startsWith(currentPrefix) || it.startsWith(legacyPrefix) }
             .forEach(editor::remove)
 
         editor.apply()
     }
 
-    private fun parseResolution(
-        value: String,
-    ): PrayerResolution =
-        runCatching {
-            PrayerResolution.valueOf(value)
-        }.getOrDefault(PrayerResolution.PENDING)
+    private fun parseResolution(value: String): PrayerResolution =
+        runCatching { PrayerResolution.valueOf(value) }
+            .getOrDefault(PrayerResolution.PENDING)
 
     private fun resolutionKey(
         prayerId: PrayerHourId,
         date: LocalDate,
-    ): String =
-        "resolution_${prayerId.value}_$date"
+    ): String = "resolution_${prayerId.value}_$date"
 
     private fun legacyResolutionKey(
         prayerId: PrayerHourId,
         date: LocalDate,
-    ): String =
-        "resolution_${prayerId.value.uppercase()}_$date"
+    ): String = "resolution_${prayerId.value.uppercase()}_$date"
 
-    private companion object {
-        const val PREFERENCES_NAME =
-            "prayer_time_preferences"
-
-        const val SCHEDULE_KEY =
-            "prayer_schedule_json"
-
-        const val DEFAULT_WINDOW_MINUTES = 60
-    }
-
-    private fun normalizeSchedule(
-        hours: List<PrayerHour>,
-    ): List<PrayerHour> =
+    private fun normalizeSchedule(hours: List<PrayerHour>): List<PrayerHour> =
         hours
             .sortedWith(
                 compareBy<PrayerHour> { it.targetTime }
@@ -354,7 +273,18 @@ class PrayerPreferences(
             )
             .mapIndexed { index, hour ->
                 hour.copy(
+                    sortOrder = index,
                     completedToday = false,
                 )
             }
+
+    private companion object {
+        const val PREFERENCES_NAME = "prayer_time_preferences"
+        const val SCHEDULE_KEY = "prayer_schedule_json"
+        const val SOUND_SOURCE_KEY = "notification_sound_source"
+        const val FEEDBACK_MODE_KEY = "notification_feedback_mode"
+        const val CUSTOM_SOUND_URI_KEY = "custom_sound_uri"
+        const val CUSTOM_SOUND_NAME_KEY = "custom_sound_name"
+        const val DEFAULT_WINDOW_MINUTES = 60
+    }
 }
